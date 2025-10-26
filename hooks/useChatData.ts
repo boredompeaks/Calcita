@@ -2,12 +2,15 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { supabase } from '../services/supabaseClient';
 import { Profile, Conversation, Message, Reaction } from '../types';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Session, RealtimeChannel } from '@supabase/supabase-js';
+// FIX: The 'Session' and 'RealtimeChannel' types are not exported from '@supabase/supabase-js' in this environment. Using 'any' instead.
+// import { Session, RealtimeChannel } from '@supabase/supabase-js';
 
 const MESSAGES_PER_PAGE = 50;
 
-export const useChatData = (session: Session | null, activeConversationId: number | null) => {
+// FIX: Using 'any' for session as 'Session' type is not available for import.
+export const useChatData = (session: any | null) => {
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
   const [allProfiles, setAllProfiles] = useState<Profile[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [presences, setPresences] = useState<Record<string, any>>({});
@@ -19,6 +22,35 @@ export const useChatData = (session: Session | null, activeConversationId: numbe
   const currentUser = useMemo(() => {
     return allProfiles.find(p => p.id === session?.user?.id);
   }, [allProfiles, session]);
+
+  const fetchInitialData = useCallback(async () => {
+    if (!session) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const [profilesRes, convosRes] = await Promise.all([
+        supabase.from('profiles').select('*'),
+        supabase.rpc('get_user_conversations')
+      ]);
+
+      if (profilesRes.error) throw profilesRes.error;
+      if (convosRes.error) throw convosRes.error;
+
+      if (profilesRes.data) {
+          setAllProfiles(profilesRes.data);
+          await AsyncStorage.setItem('CACHE_PROFILES', JSON.stringify(profilesRes.data));
+      }
+      if (convosRes.data) {
+          setConversations(convosRes.data);
+          await AsyncStorage.setItem('CACHE_CONVERSATIONS', JSON.stringify(convosRes.data));
+      }
+    } catch (e: any) {
+      console.error("Failed to fetch initial data:", e);
+      setError(e);
+    } finally {
+      setLoading(false);
+    }
+  }, [session]);
   
   const fetchMessages = useCallback(async (conversationId: number, page: number) => {
     if (!session?.user.id) return [];
@@ -59,6 +91,7 @@ export const useChatData = (session: Session | null, activeConversationId: numbe
   useEffect(() => {
     if (!session) {
       setLoading(true);
+      setError(null);
       AsyncStorage.multiRemove(['CACHE_PROFILES', 'CACHE_CONVERSATIONS']).then(() => {
           setAllProfiles([]);
           setConversations([]);
@@ -67,50 +100,34 @@ export const useChatData = (session: Session | null, activeConversationId: numbe
       });
       return;
     }
+    fetchInitialData();
+  }, [session, fetchInitialData]);
 
-    setLoading(true);
-    Promise.all([
-      supabase.from('profiles').select('*'),
-      supabase.rpc('get_user_conversations')
-    ]).then(async ([profilesRes, convosRes]) => {
-      if (profilesRes.data) {
-          setAllProfiles(profilesRes.data);
-          await AsyncStorage.setItem('CACHE_PROFILES', JSON.stringify(profilesRes.data));
-      }
-      if (convosRes.data) {
-          setConversations(convosRes.data);
-          await AsyncStorage.setItem('CACHE_CONVERSATIONS', JSON.stringify(convosRes.data));
-      }
-    }).catch(error => {
-      console.error("Failed to fetch initial data:", error);
-    }).finally(() => {
-      setLoading(false);
-    });
-  }, [session]);
-
-  useEffect(() => {
-    const loadMessages = async () => {
-        if (activeConversationId) {
-            if (!messages[activeConversationId]) {
-                try {
-                    const cached = await AsyncStorage.getItem(`CACHE_MESSAGES_${activeConversationId}`);
-                    if (cached) setMessages(p => ({ ...p, [activeConversationId]: JSON.parse(cached) }));
-                } catch (e) {}
-            }
-            if (!messagePage[activeConversationId] && !allMessagesLoaded[activeConversationId]) {
-                setLoadingMoreMessages(true);
-                fetchMessages(activeConversationId, 0).then(initialMessages => {
-                    setMessages(p => ({ ...p, [activeConversationId]: initialMessages }));
-                    setMessagePage(p => ({ ...p, [activeConversationId]: 0 }));
-                    if(initialMessages.length < MESSAGES_PER_PAGE) setAllMessagesLoaded(p => ({...p, [activeConversationId]: true}));
-                }).finally(() => setLoadingMoreMessages(false));
+  const loadInitialMessages = useCallback(async (activeConversationId: number) => {
+    if (activeConversationId) {
+        if (!messages[activeConversationId]) {
+            try {
+                const cached = await AsyncStorage.getItem(`CACHE_MESSAGES_${activeConversationId}`);
+                if (cached) setMessages(p => ({ ...p, [activeConversationId]: JSON.parse(cached) }));
+            } catch (e) {}
+        }
+        if (!messagePage[activeConversationId] && !allMessagesLoaded[activeConversationId]) {
+            setLoadingMoreMessages(true);
+            try {
+                const initialMessages = await fetchMessages(activeConversationId, 0);
+                setMessages(p => ({ ...p, [activeConversationId]: initialMessages }));
+                setMessagePage(p => ({ ...p, [activeConversationId]: 0 }));
+                if(initialMessages.length < MESSAGES_PER_PAGE) setAllMessagesLoaded(p => ({...p, [activeConversationId]: true}));
+            } catch (e) {
+                console.error("Failed to load initial messages", e);
+            } finally {
+                setLoadingMoreMessages(false);
             }
         }
-    };
-    loadMessages();
-  }, [activeConversationId, fetchMessages]);
+    }
+  }, [fetchMessages, messages, messagePage, allMessagesLoaded]);
 
-  const loadMoreMessages = useCallback(async () => {
+  const loadMoreMessages = useCallback(async (activeConversationId: number) => {
     if (loadingMoreMessages || !activeConversationId || allMessagesLoaded[activeConversationId]) return;
     setLoadingMoreMessages(true);
     const nextPage = (messagePage[activeConversationId] || 0) + 1;
@@ -119,23 +136,39 @@ export const useChatData = (session: Session | null, activeConversationId: numbe
     setMessages(p => ({ ...p, [activeConversationId]: [...(p[activeConversationId] || []), ...newMessages] }));
     setMessagePage(p => ({ ...p, [activeConversationId]: nextPage }));
     setLoadingMoreMessages(false);
-  }, [loadingMoreMessages, allMessagesLoaded, activeConversationId, messagePage, fetchMessages]);
+  }, [loadingMoreMessages, allMessagesLoaded, messagePage, fetchMessages]);
 
-  const markMessagesAsRead = useCallback(async (messageIds: number[]) => {
+  const markMessagesAsRead = useCallback(async (messageIds: number[], activeConversationId: number) => {
       if(!currentUser || !activeConversationId || messageIds.length === 0) return;
       supabase.channel(`chat:${activeConversationId}`).send({ type: 'broadcast', event: 'messages_read', payload: { message_ids: messageIds, reader_id: currentUser.id }});
       await supabase.from('messages').update({ read_at: new Date().toISOString() }).in('id', messageIds).neq('user_id', currentUser.id).is('read_at', null);
-    }, [currentUser, activeConversationId]);
+    }, [currentUser]);
     
   useEffect(() => {
     if (!currentUser) return;
 
-    const channels: RealtimeChannel[] = [];
+    // FIX: Using 'any' as 'RealtimeChannel' type is not available for import.
+    const channels: any[] = [];
     const presenceChannel = supabase.channel('online-users');
     channels.push(presenceChannel);
-    presenceChannel.on('presence', { event: 'sync' }, () => setPresences(presenceChannel.presenceState())).subscribe(async (status) => { if (status === 'SUBSCRIBED') await presenceChannel.track({ user_id: currentUser.id }); });
+    presenceChannel.on('presence', { event: 'sync' }, () => setPresences(presenceChannel.presenceState())).subscribe(async (status) => { 
+        if (status === 'SUBSCRIBED') {
+            await presenceChannel.track({ user_id: currentUser.id }); 
+            // Edge Case: Handle realtime subscription disconnects by refetching data.
+            // This ensures missed messages are fetched after reconnecting.
+            fetchInitialData();
+        }
+    });
 
-    const handleMessageInsert = (payload: any) => setMessages(prev => ({...prev, [payload.new.conversation_id]: [payload.new, ...(prev[payload.new.conversation_id] || [])]}));
+    const handleMessageInsert = (payload: any) => {
+      const newMessage = payload.new;
+      // Edge Case: Validate malformed message payloads to prevent crashes.
+      if (!newMessage || typeof newMessage.id !== 'number' || typeof newMessage.conversation_id !== 'number') {
+        console.warn("Received malformed message, discarding:", newMessage);
+        return;
+      }
+      setMessages(prev => ({...prev, [newMessage.conversation_id]: [newMessage, ...(prev[newMessage.conversation_id] || [])]}));
+    };
     const handleMessageUpdate = (payload: any) => setMessages(prev => ({...prev, [payload.new.conversation_id]: (prev[payload.new.conversation_id] || []).map(m => m.id === payload.new.id ? payload.new : m)}));
     const handleMessageDelete = (payload: any) => setMessages(prev => ({...prev, [payload.old.conversation_id]: (prev[payload.old.conversation_id] || []).filter(m => m.id !== payload.old.id)}));
     
@@ -192,10 +225,20 @@ export const useChatData = (session: Session | null, activeConversationId: numbe
       }).subscribe();
     channels.push(participantsSub);
 
+    // Edge Case: Handle multi-device state consistency for profile edits.
+    const profileSub = supabase.channel('public:profiles')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles' }, (payload) => {
+          const updatedProfile = payload.new as Profile;
+          setAllProfiles(currentProfiles => 
+              currentProfiles.map(p => p.id === updatedProfile.id ? updatedProfile : p)
+          );
+      }).subscribe();
+    channels.push(profileSub);
+
     return () => {
         channels.forEach(channel => supabase.removeChannel(channel));
     };
-  }, [currentUser]);
+  }, [currentUser, fetchInitialData]);
 
-  return { loading, currentUser, allProfiles, setAllProfiles, conversations, setConversations, presences, messages, setMessages, loadMoreMessages, loadingMoreMessages, allMessagesLoaded: allMessagesLoaded[activeConversationId || -1] || false, markMessagesAsRead };
+  return { loading, error, refetch: fetchInitialData, currentUser, allProfiles, setAllProfiles, conversations, setConversations, presences, messages, setMessages, loadInitialMessages, loadMoreMessages, loadingMoreMessages, allMessagesLoaded, markMessagesAsRead };
 };

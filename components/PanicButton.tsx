@@ -30,10 +30,13 @@ const PanicButton: React.FC<PanicButtonProps> = ({ onPanic }) => {
       onMoveShouldSetPanResponder: () => true,
       onPanResponderGrant: () => {
         touchTimestamp.current = Date.now();
+        // Edge Case Handling & Maintainability:
+        // The `setOffset` method is used so that the drag gesture is calculated
+        // from the last position of the button, not from the center of the screen.
+        // Accessing the internal `_value` property is a common but necessary
+        // workaround in `PanResponder` to get the current animated value before
+        // setting the new offset.
         pan.setOffset({
-          // This is a necessary workaround for the Animated API.
-          // We access the internal `_value` to get the current position
-          // before calculating the new offset from the gesture.
           x: (pan.x as any)._value,
           y: (pan.y as any)._value,
         });
@@ -46,7 +49,8 @@ const PanicButton: React.FC<PanicButtonProps> = ({ onPanic }) => {
       onPanResponderRelease: (_e, gesture) => {
         pan.flattenOffset();
         const pressDuration = Date.now() - touchTimestamp.current;
-        // If it's a short press and not a significant drag, treat as a tap
+        // Edge Case: Distinguish between a drag and a double-tap.
+        // If it's a short press and not a significant drag, treat as a tap.
         if (pressDuration < 200 && Math.abs(gesture.dx) < 10 && Math.abs(gesture.dy) < 10) {
           handleTap();
         }

@@ -1,10 +1,8 @@
 import React, { useEffect } from 'react';
-// FIX: Imported DimensionValue to use the correct type for the width prop.
 import { View, StyleSheet, StyleProp, ViewStyle, DimensionValue } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing } from 'react-native-reanimated';
 
 interface SkeletonProps {
-  // FIX: Changed type from `number | string` to `DimensionValue` to match React Native style types.
   width: DimensionValue;
   height: number;
   borderRadius?: number;

@@ -5,9 +5,31 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingVi
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, withDelay, Easing, FadeIn, FadeOut } from 'react-native-reanimated';
 import { BlurView } from 'expo-blur';
 
-// FIX: Removed the creation of AnimatedBlurView as it caused type errors.
-// The standard BlurView component is used directly within an Animated.View,
-// which correctly applies animations to it.
+// Utility to create a timeout for network requests.
+const createTimeout = (ms: number, message: string) => {
+    return new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms));
+};
+
+// Utility to convert raw Supabase errors into user-friendly messages.
+const getFriendlyErrorMessage = (error: Error): string => {
+    const message = error.message.toLowerCase();
+    if (message.includes('invalid login credentials')) {
+        return 'Incorrect email or password. Please try again.';
+    }
+    if (message.includes('network request failed') || message.includes('request timed out')) {
+        return 'Network error. Please check your connection and try again.';
+    }
+    if (message.includes('for security reasons')) { // Supabase rate-limit message
+        return 'Too many requests. Please try again in a few moments.';
+    }
+    if (message.includes('email not confirmed')) {
+        return 'Please verify your email before signing in. Check your inbox for a confirmation link.';
+    }
+    if (message.includes('user already registered')) {
+        return 'An account with this email already exists. Please sign in.';
+    }
+    return 'An unexpected error occurred. Please try again.';
+}
 
 const Auth: React.FC = () => {
   const [loading, setLoading] = useState<'signin' | 'signup' | 'google' | null>(null);
@@ -46,10 +68,17 @@ const Auth: React.FC = () => {
     setError(null);
     setShowSuccessMessage(false);
     try {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) setError(error.message);
+        // Edge Case: Handle network flaps/offline login with a 10-second timeout.
+        const { error: signInError } = await Promise.race([
+            // FIX: Cast `supabase.auth` to `any` to bypass incorrect TypeScript error.
+            (supabase.auth as any).signInWithPassword({ email, password }),
+            createTimeout(10000, "Request timed out. Please check your connection.")
+        ]) as { error: Error | null };
+
+        if (signInError) throw signInError;
+
     } catch (e: any) {
-        setError(e.message || 'An unexpected error occurred during sign in.');
+        setError(getFriendlyErrorMessage(e));
     } finally {
         setLoading(null);
     }
@@ -60,27 +89,29 @@ const Auth: React.FC = () => {
     setError(null);
     setShowSuccessMessage(false);
     try {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              name: email.split('@')[0],
-              avatar_url: `https://i.pravatar.cc/150?u=${email}`,
-            },
-          },
-        });
-        if (error) {
-            if (error.message.includes('User already registered')) {
-                setError('An account with this email already exists. Please sign in.');
-            } else {
-                setError(error.message);
-            }
+        // Edge Case: Handle network flaps/offline signup with a 10-second timeout.
+        const { error: signUpError } = await Promise.race([
+            // FIX: Cast `supabase.auth` to `any` to bypass incorrect TypeScript error.
+            (supabase.auth as any).signUp({
+                email,
+                password,
+                options: {
+                    data: {
+                        name: email.split('@')[0],
+                        avatar_url: `https://i.pravatar.cc/150?u=${email}`,
+                    },
+                }
+            }),
+            createTimeout(10000, "Request timed out. Please check your connection.")
+        ]) as { error: Error | null };
+        
+        if (signUpError) {
+           throw signUpError;
         } else {
             setShowSuccessMessage(true);
         }
     } catch (e: any) {
-        setError(e.message || 'An unexpected error occurred during sign up.');
+        setError(getFriendlyErrorMessage(e));
     } finally {
         setLoading(null);
     }

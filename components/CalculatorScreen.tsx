@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, Pressable, SafeAreaView } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, Pressable, SafeAreaView, AccessibilityInfo } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -33,22 +33,57 @@ const CalculatorScreen: React.FC<{onUnlock: () => void}> = ({ onUnlock }) => {
   const [operator, setOperator] = useState<string | null>(null);
   const [previousValue, setPreviousValue] = useState<string | null>(null);
   const [waitingForOperand, setWaitingForOperand] = useState(true);
+  const [isErrorState, setIsErrorState] = useState(false);
+  const [isScreenReaderEnabled, setIsScreenReaderEnabled] = useState(false);
+
+  useEffect(() => {
+    // Edge Case: Check if a screen reader is active to adjust UI behavior.
+    const checkScreenReader = async () => {
+      const isEnabled = await AccessibilityInfo.isScreenReaderEnabled();
+      setIsScreenReaderEnabled(isEnabled);
+    };
+
+    checkScreenReader();
+    const subscription = AccessibilityInfo.addEventListener('screenReaderChanged', (isEnabled) => {
+        setIsScreenReaderEnabled(isEnabled);
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   const handleNumberInput = (num: string) => {
+    // Edge Case: Ensure error state resets correctly on new input.
+    if (isErrorState) {
+        setDisplayValue(num);
+        setIsErrorState(false);
+        setWaitingForOperand(false);
+        return;
+    }
     if (waitingForOperand) {
       setDisplayValue(num);
       setWaitingForOperand(false);
     } else {
+      // Edge Case: Prevent integer overflow and UI glitches with very large numbers.
+      if (displayValue.length >= 9) return;
       setDisplayValue(displayValue === '0' ? num : displayValue + num);
     }
   };
 
   const handleOperatorInput = (nextOperator: string) => {
+    if (isErrorState) return;
     const inputValue = parseFloat(displayValue);
     if (operator && !waitingForOperand) {
       const result = calculate(parseFloat(previousValue!), inputValue, operator);
-      setDisplayValue(String(result));
-      setPreviousValue(String(result));
+      if (typeof result === 'string') {
+          setIsErrorState(true);
+          setDisplayValue(result);
+      } else {
+          const resultStr = String(result);
+          setDisplayValue(resultStr);
+          setPreviousValue(resultStr);
+      }
     } else {
       setPreviousValue(displayValue);
     }
@@ -56,21 +91,30 @@ const CalculatorScreen: React.FC<{onUnlock: () => void}> = ({ onUnlock }) => {
     setOperator(nextOperator);
   };
 
-  const calculate = (prev: number, current: number, op: string) => {
+  const calculate = (prev: number, current: number, op: string): number | string => {
     switch (op) {
       case '+': return prev + current;
       case '-': return prev - current;
       case '*': return prev * current;
-      case '/': return prev / current;
+      case '/': 
+        // Edge Case: Handle invalid arithmetic (division by zero).
+        if (current === 0) return "Error";
+        return prev / current;
       default: return current;
     }
   };
 
   const handleEquals = () => {
+    if (isErrorState) return;
     const inputValue = parseFloat(displayValue);
     if (operator && previousValue !== null) {
       const result = calculate(parseFloat(previousValue), inputValue, operator);
-      setDisplayValue(String(result));
+      if (typeof result === 'string') {
+        setIsErrorState(true);
+        setDisplayValue(result);
+      } else {
+        setDisplayValue(String(result));
+      }
       setPreviousValue(null);
       setOperator(null);
       setWaitingForOperand(true);
@@ -78,27 +122,26 @@ const CalculatorScreen: React.FC<{onUnlock: () => void}> = ({ onUnlock }) => {
   };
   
   const handleLongPressEquals = () => {
+    // Secret codes for unlocking.
     if (['280310', '210610'].includes(displayValue.replace(/\./g, ''))) {
       onUnlock();
     }
   };
 
   const handleClear = () => {
-    if (isAllClear) {
-      setOperator(null);
-      setPreviousValue(null);
-    }
+    setOperator(null);
+    setPreviousValue(null);
     setDisplayValue('0');
     setWaitingForOperand(true);
+    setIsErrorState(false);
   };
 
-  const handlePlusMinus = () => { setDisplayValue(String(parseFloat(displayValue) * -1)); };
-  const handlePercent = () => { setDisplayValue(String(parseFloat(displayValue) / 100)); };
-  const handleDot = () => { if (!displayValue.includes('.')) setDisplayValue(displayValue + '.'); };
+  const handlePlusMinus = () => { if (!isErrorState) setDisplayValue(String(parseFloat(displayValue) * -1)); };
+  const handlePercent = () => { if (!isErrorState) setDisplayValue(String(parseFloat(displayValue) / 100)); };
+  const handleDot = () => { if (!isErrorState && !displayValue.includes('.')) setDisplayValue(displayValue + '.'); };
 
-  const isAllClear = waitingForOperand || displayValue === '0';
   const buttons = [
-    { label: isAllClear ? 'AC' : 'C', style: 'top', action: handleClear, accessibilityLabel: 'Clear' },
+    { label: 'AC', style: 'top', action: handleClear, accessibilityLabel: 'All Clear' },
     { label: '+/-', style: 'top', action: handlePlusMinus, accessibilityLabel: 'Plus minus' },
     { label: '%', style: 'top', action: handlePercent, accessibilityLabel: 'Percentage' },
     { label: '/', style: 'operator', action: () => handleOperatorInput('/'), accessibilityLabel: 'Divide' },
@@ -122,7 +165,16 @@ const CalculatorScreen: React.FC<{onUnlock: () => void}> = ({ onUnlock }) => {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.displayContainer}>
-        <Text style={styles.displayText} numberOfLines={1} adjustsFontSizeToFit>{displayValue}</Text>
+        <Text 
+          style={[styles.displayText, isErrorState && { fontSize: 64 }]} 
+          numberOfLines={1} 
+          adjustsFontSizeToFit
+          accessible={true}
+          // Edge Case: Preserve stealth when accessibility tools are active.
+          accessibilityLabel={isScreenReaderEnabled ? (isErrorState ? 'Error' : 'Display') : undefined}
+        >
+          {displayValue}
+        </Text>
       </View>
       <View style={styles.buttonContainer}>
         {buttons.map((btn, i) => (

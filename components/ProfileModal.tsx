@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, Image, TouchableOpacity, StyleSheet, SafeAreaView, ActivityIndicator, Modal, Pressable } from 'react-native';
+import { View, Text, TextInput, Image, TouchableOpacity, StyleSheet, SafeAreaView, ActivityIndicator, Modal, Pressable, Alert } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { BlurView } from 'expo-blur';
 import { launchImageLibrary } from 'react-native-image-picker';
@@ -43,7 +43,20 @@ const ProfileModal: React.FC<ProfileModalProps> = ({ currentUser, onClose, onSav
 
   const handleChooseAvatar = () => {
     launchImageLibrary({ mediaType: 'photo', quality: 0.5, maxWidth: 512, maxHeight: 512 }, (response) => {
-      if (response.didCancel || response.errorCode) return;
+      if (response.didCancel) return;
+      // Edge Case: Handle permission denial for photo library access.
+      if (response.errorCode) {
+        if (response.errorCode === 'permission') {
+          Alert.alert(
+            'Permission Denied',
+            'To select a profile picture, please grant access to your photo library in your device settings.',
+            [{ text: 'OK' }]
+          );
+        } else {
+          Alert.alert('Error', response.errorMessage || 'An unknown error occurred selecting the image.');
+        }
+        return;
+      }
       if (response.assets && response.assets[0]) {
         const asset = response.assets[0];
         setAvatar({ uri: asset.uri || '', type: asset.type || 'image/jpeg', name: asset.fileName || 'avatar.jpg' });

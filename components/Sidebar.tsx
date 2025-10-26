@@ -3,7 +3,7 @@ import { View, Text, TextInput, FlatList, Image, TouchableOpacity, StyleSheet, P
 import Animated, { Layout, FadeIn, FadeOut, useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { BlurView } from 'expo-blur';
 import { Profile, Conversation } from '../types';
-import { MoonIcon, SearchIcon, SunIcon, LogoutIcon, SendIcon, EditIcon } from './icons';
+import { MoonIcon, SearchIcon, SunIcon, LogoutIcon, EditIcon } from './icons';
 import Skeleton from './Skeleton';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -74,23 +74,6 @@ const ConversationItem: React.FC<{ item: Conversation; onSelectConversation: (c:
   );
 };
 
-const SidebarSkeleton: React.FC<{ isDarkMode: boolean }> = ({ isDarkMode }) => {
-    const styles = getStyles(isDarkMode);
-    return (
-        <View style={styles.listContainer}>
-            {Array.from({ length: 10 }).map((_, index) => (
-                <Animated.View key={index} style={styles.skeletonItem} layout={Layout} entering={FadeIn}>
-                    <Skeleton width={48} height={48} borderRadius={24} isDarkMode={isDarkMode} />
-                    <View style={{ flex: 1, marginLeft: 16 }}>
-                        <Skeleton width="60%" height={16} isDarkMode={isDarkMode} style={{ marginBottom: 8 }} />
-                        <Skeleton width="90%" height={14} isDarkMode={isDarkMode} />
-                    </View>
-                </Animated.View>
-            ))}
-        </View>
-    );
-};
-
 interface SidebarProps {
   conversations: Conversation[];
   currentUser: Profile | undefined;
@@ -102,11 +85,10 @@ interface SidebarProps {
   onLock: () => void;
   onEditProfile: () => void;
   selectedConversationId: number | null;
-  isLoading: boolean;
 }
 
 const Sidebar: React.FC<SidebarProps> = (props) => {
-  const { conversations, currentUser, presences, onSelectConversation, isDarkMode, setIsDarkMode, onNewChat, onLock, onEditProfile, selectedConversationId, isLoading } = props;
+  const { conversations, currentUser, presences, onSelectConversation, isDarkMode, setIsDarkMode, onNewChat, onLock, onEditProfile, selectedConversationId } = props;
   const [searchTerm, setSearchTerm] = useState('');
   
   const conversationsWithOnlineStatus = useMemo(() => {
@@ -138,11 +120,9 @@ const Sidebar: React.FC<SidebarProps> = (props) => {
   const styles = getStyles(isDarkMode);
   
   if (!currentUser) {
-      return (
-          <BlurView intensity={50} tint={isDarkMode ? 'dark' : 'light'} style={styles.container}>
-              <SidebarSkeleton isDarkMode={isDarkMode} />
-          </BlurView>
-      );
+      // This state is now handled by the parent ChatScreen component,
+      // which will show a full-screen loader or error state.
+      return null;
   }
 
   return (
@@ -173,17 +153,15 @@ const Sidebar: React.FC<SidebarProps> = (props) => {
       </View>
 
       {/* User List */}
-      {isLoading ? <SidebarSkeleton isDarkMode={isDarkMode} /> : (
         <AnimatedFlatList
             data={filteredConversations}
             renderItem={({ item }) => <ConversationItem item={item} onSelectConversation={onSelectConversation} isSelected={item.id === selectedConversationId} isDarkMode={isDarkMode} formatTimestamp={formatTimestamp} />}
             keyExtractor={(item) => item.id.toString()}
             contentContainerStyle={styles.listContainer}
         />
-      )}
 
       <AnimatedButton onPress={onNewChat} style={styles.fab} accessibilityLabel="Create new chat">
-        <SendIcon size={24} color="#FFF"/>
+        <EditIcon size={24} color="#FFF"/>
       </AnimatedButton>
     </BlurView>
   );
@@ -228,6 +206,29 @@ const getStyles = (isDarkMode: boolean) => StyleSheet.create({
   darkSubtleText: { color: '#9CA3AF' },
   fab: { position: 'absolute', bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: '#3B82F6', alignItems: 'center', justifyContent: 'center', elevation: 8, shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 5 },
   skeletonItem: { flexDirection: 'row', alignItems: 'center', padding: 12 },
+  stuckContainer: {
+    padding: 16,
+    borderTopWidth: 1,
+    borderColor: isDarkMode ? 'rgba(63, 63, 70, 0.5)' : 'rgba(229, 231, 235, 0.5)',
+    alignItems: 'center',
+    backgroundColor: isDarkMode ? 'rgba(24, 24, 27, 0.5)' : 'rgba(249, 250, 251, 0.5)',
+  },
+  stuckText: {
+    color: isDarkMode ? '#9CA3AF' : '#6B7280',
+    fontSize: 14,
+    marginBottom: 8,
+  },
+  stuckButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: isDarkMode ? '#F87171' : '#EF4444',
+  },
+  stuckButtonText: {
+    color: isDarkMode ? '#F87171' : '#EF4444',
+    fontWeight: '600',
+  },
 });
 
 

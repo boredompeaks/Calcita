@@ -1,5 +1,12 @@
 import { RTCPeerConnection, RTCIceCandidate, RTCSessionDescription, mediaDevices, MediaStream } from 'react-native-webrtc';
 
+// Local type definitions to patch missing exports from react-native-webrtc
+type RTCIceConnectionState = 'new' | 'checking' | 'connected' | 'completed' | 'disconnected' | 'failed' | 'closed';
+interface RTCSessionDescriptionInit {
+    type: 'offer' | 'pranswer' | 'answer' | 'rollback';
+    sdp: string;
+}
+
 const configuration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -25,43 +32,51 @@ export class WebRTCManager {
     this.onSetRemoteStream = onSetRemoteStream;
   }
 
-  async start(): Promise<void> {
-    this.peerConnection = new RTCPeerConnection(configuration);
-    
-    // The `react-native-webrtc` type definitions are incomplete and do not include
-    // standard event handlers. Casting to `any` is a necessary workaround.
-    const pc = this.peerConnection as any;
-    
-    pc.onicecandidate = (event: { candidate: RTCIceCandidate; }) => {
-        if (event.candidate && this.onIceCandidateCallback) {
-            this.onIceCandidateCallback(event.candidate);
+  async start(): Promise<boolean> {
+    try {
+        this.peerConnection = new RTCPeerConnection(configuration);
+        
+        // FIX: Cast peerConnection to any to set event handler properties that are missing from the type definition.
+        (this.peerConnection as any).onicecandidate = (event: any) => {
+            if (event.candidate && this.onIceCandidateCallback) {
+                this.onIceCandidateCallback(event.candidate);
+            }
+        };
+        
+        // FIX: Cast peerConnection to any to set event handler properties that are missing from the type definition.
+        (this.peerConnection as any).oniceconnectionstatechange = () => {
+            if(this.onConnectionStateChange && this.peerConnection?.iceConnectionState) {
+                this.onConnectionStateChange(this.peerConnection.iceConnectionState);
+            }
         }
-    };
-    
-    pc.oniceconnectionstatechange = () => {
-        if(this.onConnectionStateChange && pc.iceConnectionState) {
-            this.onConnectionStateChange(pc.iceConnectionState);
-        }
+
+        // Edge Case: Handle camera/mic permission denial.
+        const stream = await mediaDevices.getUserMedia({
+            audio: true,
+            video: { width: 640, height: 480, frameRate: 30 },
+        });
+
+        this.localStream = stream;
+        this.cameraStream = stream;
+        this.onSetLocalStream(stream);
+        
+        stream.getTracks().forEach(track => {
+          this.peerConnection?.addTrack(track, stream);
+        });
+
+        // FIX: Cast peerConnection to any to set event handler properties that are missing from the type definition.
+        (this.peerConnection as any).ontrack = (event: any) => {
+            if (event.streams && event.streams[0]) {
+                this.remoteStream = event.streams[0];
+                this.onSetRemoteStream(this.remoteStream);
+            }
+        };
+        return true;
+    } catch (error) {
+        console.error("Failed to start WebRTC:", error);
+        this.close();
+        return false;
     }
-
-    const stream = await mediaDevices.getUserMedia({
-        audio: true,
-        video: { width: 640, height: 480, frameRate: 30 },
-    });
-    this.localStream = stream;
-    this.cameraStream = stream;
-    this.onSetLocalStream(stream);
-    
-    stream.getTracks().forEach(track => {
-      this.peerConnection?.addTrack(track, stream);
-    });
-
-    pc.ontrack = (event: { streams: MediaStream[]; }) => {
-        if (event.streams && event.streams[0]) {
-            this.remoteStream = event.streams[0];
-            this.onSetRemoteStream(this.remoteStream);
-        }
-    };
   }
 
   async createOffer(): Promise<RTCSessionDescriptionInit> {
@@ -119,7 +134,8 @@ export class WebRTCManager {
           }
           this.isScreenSharing = false;
         } else {
-          const screenStream = await mediaDevices.getDisplayMedia({video: true}) as MediaStream;
+          // Edge Case: Handle screen sharing permission denial.
+          const screenStream = await mediaDevices.getDisplayMedia() as MediaStream;
           const screenTrack = screenStream.getVideoTracks()[0];
           if(!screenTrack) throw new Error("No screen track found");
           
@@ -129,7 +145,7 @@ export class WebRTCManager {
             await videoSender.replaceTrack(screenTrack);
           } catch(e) {
             console.error("Error replacing camera track with screen track:", e);
-            return this.isScreenSharing; // Return current state if replace fails
+            return this.isScreenSharing;
           }
 
           this.localStream = screenStream;

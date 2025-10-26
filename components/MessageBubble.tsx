@@ -153,7 +153,6 @@ const MessageBubble: React.FC<MessageBubbleProps> = (props) => {
   }
   
   const handleLongPress = (event: NativeSyntheticEvent<NativeTouchEvent>) => {
-    // Disable long press for pending/failed messages
     if (typeof message.id === 'string' || message.status === 'pending' || message.status === 'failed') {
       return;
     }
@@ -171,10 +170,10 @@ const MessageBubble: React.FC<MessageBubbleProps> = (props) => {
   };
 
   const handleViewOncePress = async () => {
-    setIsOpened(true); // Optimistically show the content
+    setIsOpened(true);
     const success = await onViewOnceMessage(message);
     if (!success) {
-      setIsOpened(false); // Revert if the server call fails
+      setIsOpened(false);
     }
   };
   
@@ -189,7 +188,9 @@ const MessageBubble: React.FC<MessageBubbleProps> = (props) => {
     if (!message.content || !searchTerm) {
         return <Text style={styles.contentText}>{message.content}</Text>;
     }
-    const parts = message.content.split(new RegExp(`(${searchTerm})`, 'gi'));
+    // Edge Case: Sanitize search term to escape special regex characters to prevent app crash.
+    const sanitizedSearchTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const parts = message.content.split(new RegExp(`(${sanitizedSearchTerm})`, 'gi'));
     return (
         <Text style={styles.contentText}>
             {parts.map((part, index) => 
@@ -205,8 +206,8 @@ const MessageBubble: React.FC<MessageBubbleProps> = (props) => {
 
   const isGroupMessage = sender !== undefined;
   const isViewOnceAndUnopened = message.is_view_once && !isCurrentUser && !isOpened;
-  const senderName = sender?.name || 'Unknown User';
-  const repliedSenderName = repliedMessage?.sender?.id === currentUserId ? 'You' : (repliedMessage?.sender?.name || 'Unknown User');
+  const senderName = sender?.name || 'Deleted User';
+  const repliedSenderName = repliedMessage?.sender?.id === currentUserId ? 'You' : (repliedMessage?.sender?.name || 'Deleted User');
 
   const renderDeliveryStatus = () => {
     if (!isCurrentUser) return null;
@@ -223,7 +224,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = (props) => {
     if (message.read_at) {
       return <CheckAllIcon size={16} style={iconStyle} color={isDarkMode ? '#60A5FA' : '#3B82F6'} />;
     }
-    if (typeof message.id === 'number') { // Only show sent check if it's a real message
+    if (typeof message.id === 'number') {
       return <CheckIcon size={16} style={iconStyle} color={pendingColor} />;
     }
     

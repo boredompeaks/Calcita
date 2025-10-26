@@ -72,8 +72,11 @@ const ChatView: React.FC<ChatViewProps> = (props) => {
   }, [props.typingInfo, props.conversation.id]);
 
   const messagesWithSenderAndReply = useMemo(() => {
+    // Edge Case: Handle messages from a user who has been deleted.
+    const deletedUserFallback: Profile = { id: 'deleted', name: 'Deleted User', avatar_url: 'https://i.pravatar.cc/150?u=deleted' };
+
     const messagesWithSender = messagesToDisplay.map(message => {
-        const sender = props.allProfiles.find(p => p.id === message.user_id);
+        const sender = props.allProfiles.find(p => p.id === message.user_id) || deletedUserFallback;
         return { ...message, sender };
     });
 

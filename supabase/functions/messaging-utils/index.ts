@@ -1,5 +1,10 @@
 // File: supabase/functions/messaging-utils/index.ts
 
+// FIX: The Deno global object is not available in non-Deno development environments.
+// Declaring it as `any` bypasses TypeScript checks, assuming it will be
+// available at runtime in the Supabase Edge Function environment.
+declare const Deno: any;
+
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { Expo } from 'npm:expo-server-sdk@3.7.0';
@@ -7,10 +12,9 @@ import { Expo } from 'npm:expo-server-sdk@3.7.0';
 const expo = new Expo();
 
 // Admin client for elevated privileges.
-// FIX: The Deno global type might not be available in all TypeScript environments, leading to a type error for 'Deno.env'. Casting 'Deno' to 'any' allows access to environment variables without causing a compile-time error.
 const supabaseAdminClient = createClient(
-  (Deno as any).env.get('SUPABASE_URL')!,
-  (Deno as any).env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  Deno.env.get('SUPABASE_URL')!,
+  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 );
 
 serve(async (req) => {
