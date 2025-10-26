@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { View, Text, Image, TouchableOpacity, StyleSheet, TextInput } from 'react-native';
+import Animated, { Layout, FadeIn, FadeOut } from 'react-native-reanimated';
 import { Conversation } from '../types';
 import { CallIcon, MoreVerticalIcon, ArrowLeftIcon, SearchIcon, XIcon, UsersIcon } from './icons';
 import TypingIndicator from './TypingIndicator';
@@ -45,7 +46,7 @@ const Header: React.FC<HeaderProps> = ({ conversation, currentUserId, typingUser
   }, [conversation, currentUserId]);
   
   const renderDefaultHeader = () => (
-    <>
+    <Animated.View style={styles.headerContent} layout={Layout.duration(250)} entering={FadeIn.duration(150)} exiting={FadeOut.duration(150)}>
       <View style={styles.profileContainer}>
         {conversation.is_group ? (
             <View style={[styles.avatar, styles.groupAvatar]}>
@@ -72,11 +73,11 @@ const Header: React.FC<HeaderProps> = ({ conversation, currentUserId, typingUser
             <CallIcon color={isDarkMode ? '#FFF' : '#000'} />
         </TouchableOpacity>
       </View>
-    </>
+    </Animated.View>
   );
 
   const renderSearchHeader = () => (
-    <>
+    <Animated.View style={styles.headerContent} layout={Layout.duration(250)} entering={FadeIn.duration(150)} exiting={FadeOut.duration(150)}>
       <TextInput
         placeholder="Search in conversation..."
         placeholderTextColor={isDarkMode ? '#9CA3AF' : '#6B7280'}
@@ -88,7 +89,7 @@ const Header: React.FC<HeaderProps> = ({ conversation, currentUserId, typingUser
       <TouchableOpacity style={styles.actionButton} onPress={onToggleSearch} accessibilityLabel="Close search">
         <XIcon size={20} color={isDarkMode ? '#FFF' : '#000'}/>
       </TouchableOpacity>
-    </>
+    </Animated.View>
   );
   
   return (
@@ -115,6 +116,11 @@ const getStyles = (isDarkMode: boolean) => StyleSheet.create({
     borderBottomWidth: 1,
     borderColor: isDarkMode ? 'rgba(63, 63, 70, 0.5)' : 'rgba(229, 231, 235, 0.5)',
     backgroundColor: isDarkMode ? 'rgba(24, 24, 27, 0.7)' : 'rgba(249, 250, 251, 0.7)',
+  },
+  headerContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   backButton: {
     paddingRight: 8,

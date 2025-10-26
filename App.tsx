@@ -12,12 +12,12 @@ const UNLOCKED_KEY = 'isUnlocked';
 
 // Configure notification handling
 Notifications.setNotificationHandler({
+  // FIX: Added missing properties to the returned object to conform to the NotificationBehavior type.
+  // The version of expo-notifications in this project requires these properties to be explicitly set.
   handleNotification: async () => ({
     shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
   }),
 });
 
@@ -26,9 +26,49 @@ const App: React.FC = () => {
   const appStateRef = useRef(AppState.currentState);
   const backgroundedTimeRef = useRef<number | null>(null);
   const [isScreenSharingActive, setIsScreenSharingActive] = useState(false);
+  const isScreenSharingRef = useRef(isScreenSharingActive);
   const [isPanicking, setIsPanicking] = useState(false);
-  const notificationListener = useRef<{ remove: () => void } | null>(null);
-  const responseListener = useRef<{ remove: () => void } | null>(null);
+  const notificationListener = useRef<Notifications.Subscription | null>(null);
+  const responseListener = useRef<Notifications.Subscription | null>(null);
+
+  useEffect(() => {
+    isScreenSharingRef.current = isScreenSharingActive;
+  }, [isScreenSharingActive]);
+  
+  // This ref pattern ensures the AppState listener always has the latest function
+  // without needing to re-subscribe on every render.
+  const handleAppStateChangeRef = useRef<((nextAppState: AppStateStatus) => void) | null>(null);
+
+  const handleLock = useCallback(async (shouldSignOut: boolean = false) => {
+    setAppState('calculator');
+    await AsyncStorage.removeItem(UNLOCKED_KEY);
+    if (shouldSignOut) {
+        await supabase.auth.signOut();
+    }
+  }, []);
+
+  const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+    if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
+      const now = Date.now();
+      const bgTime = backgroundedTimeRef.current;
+      if (bgTime && now - bgTime > LOCK_TIMEOUT_MS && !isScreenSharingRef.current) {
+        await handleLock(true); 
+      }
+      backgroundedTimeRef.current = null;
+    } 
+    else if (nextAppState.match(/inactive|background/)) {
+        const isUnlocked = await AsyncStorage.getItem(UNLOCKED_KEY);
+        if (isUnlocked === 'true' && !isScreenSharingRef.current) {
+            backgroundedTimeRef.current = Date.now();
+        }
+    }
+    appStateRef.current = nextAppState;
+  };
+
+  // Keep the ref updated with the latest handler function
+  useEffect(() => {
+    handleAppStateChangeRef.current = handleAppStateChange;
+  });
 
   useEffect(() => {
     const checkInitialState = async () => {
@@ -37,60 +77,33 @@ const App: React.FC = () => {
     };
     checkInitialState();
 
-    const subscription = AppState.addEventListener('change', handleAppStateChange);
-
-    // Listen for incoming notifications
-    notificationListener.current = Notifications.addNotificationReceivedListener(_notification => {
-      // Callback is required. Can be used for foreground notification handling.
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      handleAppStateChangeRef.current?.(nextAppState);
     });
 
-    // Listen for user tapping on a notification
+    notificationListener.current = Notifications.addNotificationReceivedListener(_notification => {
+      // Required callback
+    });
+
     responseListener.current = Notifications.addNotificationResponseReceivedListener(_response => {
-      // Regardless of the notification content, force the app to the calculator screen
       handleLock(false);
     });
 
     return () => {
       subscription.remove();
-      notificationListener.current?.remove();
-      responseListener.current?.remove();
+      // FIX: The 'removeNotificationSubscription' method is deprecated.
+      // The correct way to remove a listener is by calling .remove() on the subscription object.
+      if (notificationListener.current) notificationListener.current.remove();
+      // FIX: The 'removeNotificationSubscription' method is deprecated.
+      // The correct way to remove a listener is by calling .remove() on the subscription object.
+      if (responseListener.current) responseListener.current.remove();
     };
-  }, []);
+  }, [handleLock]);
 
-  const handleAppStateChange = useCallback(async (nextAppState: AppStateStatus) => {
-    // Check for coming to foreground
-    if (appStateRef.current.match(/inactive|background/) && nextAppState === 'active') {
-      const now = Date.now();
-      const bgTime = backgroundedTimeRef.current;
-      // Only lock if timeout has passed AND we are not screen sharing
-      if (bgTime && now - bgTime > LOCK_TIMEOUT_MS && !isScreenSharingActive) {
-        await handleLock(true); // Force sign out on timeout
-      }
-      backgroundedTimeRef.current = null;
-    } 
-    // Check for going to background
-    else if (nextAppState.match(/inactive|background/)) {
-        // If app is in chat mode when backgrounded, start the timer
-        const isUnlocked = await AsyncStorage.getItem(UNLOCKED_KEY);
-        // Only start the lock timer if we are not screen sharing
-        if (isUnlocked === 'true' && !isScreenSharingActive) {
-            backgroundedTimeRef.current = Date.now();
-        }
-    }
-    appStateRef.current = nextAppState;
-  }, [isScreenSharingActive]);
 
   const handleUnlock = async () => {
     await AsyncStorage.setItem(UNLOCKED_KEY, 'true');
     setAppState('chat');
-  };
-
-  const handleLock = async (shouldSignOut: boolean = false) => {
-    setAppState('calculator');
-    await AsyncStorage.removeItem(UNLOCKED_KEY);
-    if (shouldSignOut) {
-        await supabase.auth.signOut();
-    }
   };
   
   const handlePanic = async (conversation: Conversation | null, user: Profile | null) => {
@@ -99,7 +112,6 @@ const App: React.FC = () => {
 
     try {
         if (conversation && user) {
-            // 1. Get last 20 message IDs in the current conversation
             const { data: messages, error: messagesError } = await supabase
                 .from('messages')
                 .select('id')
@@ -115,7 +127,6 @@ const App: React.FC = () => {
                 if (hideError) console.error("Failed to hide messages:", hideError);
             }
             
-            // 2. Send a final message to alert other user
             await supabase.from('messages').insert({
                 content: 'Panic button activated.',
                 user_id: user.id,
@@ -125,9 +136,7 @@ const App: React.FC = () => {
     } catch (error) {
         console.error("An error occurred during the panic sequence:", error);
     } finally {
-        // 3. CRITICAL: Lock the UI and sign out, regardless of whether the above steps succeeded.
         await handleLock(true);
-        // 4. Open an external website
         const sites = ['https://www.google.com/', 'https://www.bbc.com/news', 'https://www.wikipedia.org/'];
         const randomSite = sites[Math.floor(Math.random() * sites.length)];
         Linking.openURL(randomSite).catch(err => console.error("Couldn't load external page", err));

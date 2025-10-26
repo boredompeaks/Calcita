@@ -45,10 +45,12 @@ interface ChatViewProps {
   onToggleLocalVideo: () => void;
   localMediaState: { isMicMuted: boolean; isCameraOff: boolean; };
   remoteMediaState: { isMicMuted: boolean; isCameraOff: boolean; };
+  showToast: (message: string, type: 'error' | 'info') => void;
+  onRetrySendMessage: (tempId: string) => void;
 }
 
 const ChatView: React.FC<ChatViewProps> = (props) => {
-  const { setReplyingTo, onStartCall, localStream, remoteStream, onEndCall, callState, webRTCManager, onPanic, onScreenShareChange, isOffline, isDarkMode, onToggleLocalAudio, onToggleLocalVideo, localMediaState, remoteMediaState } = props;
+  const { setReplyingTo, onStartCall, localStream, remoteStream, onEndCall, callState, webRTCManager, onPanic, onScreenShareChange, isOffline, isDarkMode, onToggleLocalAudio, onToggleLocalVideo, localMediaState, remoteMediaState, showToast, onRetrySendMessage } = props;
   const [isSearching, setIsSearching] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -123,6 +125,7 @@ const ChatView: React.FC<ChatViewProps> = (props) => {
         isLoadingMore={props.isLoadingMore}
         allMessagesLoaded={props.allMessagesLoaded}
         isDarkMode={isDarkMode}
+        onRetry={onRetrySendMessage}
       />
       <MessageInput 
         onSendMessage={props.onSendMessage} 
@@ -132,6 +135,7 @@ const ChatView: React.FC<ChatViewProps> = (props) => {
         currentUserId={props.currentUserId}
         isOffline={isOffline}
         isDarkMode={isDarkMode}
+        showToast={showToast}
       />
       <Modal visible={isCallActive} animationType="slide" onRequestClose={onEndCall}>
         <VideoCallView 

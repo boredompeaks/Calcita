@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Profile, Message, Conversation, SignalingPayload, Reaction } from '../types';
 import { supabase } from '../services/supabaseClient';
 import { WebRTCManager } from '../services/webrtcService';
@@ -11,70 +11,59 @@ import ForwardModal from './ForwardModal';
 import IncomingCallModal from './IncomingCallModal';
 import PanicButton from './PanicButton';
 import { SpinnerIcon, AlertTriangleIcon, XIcon, CheckCircleIcon } from './icons';
-import { SafeAreaView, View, StyleSheet, ImageBackground, Modal, Platform, UIManager, useWindowDimensions, Alert, Text, TouchableOpacity, BackHandler } from 'react-native';
-import Animated, { Layout, FadeInUp, FadeOutUp } from 'react-native-reanimated';
+import { SafeAreaView, View, StyleSheet, ImageBackground, Platform, UIManager, useWindowDimensions, Alert, Text, TouchableOpacity, BackHandler, AppState, AppStateStatus } from 'react-native';
+import Animated, { Layout, FadeInUp, FadeOutUp, useSharedValue, useAnimatedStyle, withTiming, runOnJS } from 'react-native-reanimated';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { MediaStream } from 'react-native-webrtc';
+import { MediaStream, RTCIceConnectionState } from 'react-native-webrtc';
 import { useChatData } from '../hooks/useChatData';
 import { Session } from '@supabase/supabase-js';
+import { BlurView } from 'expo-blur';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-const CALL_TIMEOUT_MS = 30000; // 30 seconds
+const CALL_TIMEOUT_MS = 30000;
+const MAX_RETRIES = 3;
+const TOAST_DURATION = 3500;
 
-interface ChatScreenProps {
-  onLock: () => void;
-  onPanic: (conversation: Conversation | null, user: Profile | null) => void;
-  onSetScreenSharing: (isSharing: boolean) => void;
-}
+type QueuedMessage = { tempId: string; payload: Omit<Message, 'id' | 'created_at' | 'reactions' | 'read_at'>; file?: { uri: string; type: string; name: string }; retries: number; };
+type Toast = { id: number, message: string, type: 'error' | 'info' };
 
-type QueuedMessage = {
-  tempId: string;
-  payload: Omit<Message, 'id' | 'created_at' | 'reactions' | 'read_at'>;
-  retries?: number;
+const ToastNotification: React.FC<{ toast: Toast, onDismiss: (id: number) => void }> = ({ toast, onDismiss }) => {
+    const progress = useSharedValue(1);
+    useEffect(() => {
+        progress.value = withTiming(0, { duration: TOAST_DURATION }, (isFinished) => { if (isFinished) runOnJS(onDismiss)(toast.id); });
+    }, [toast, onDismiss, progress]);
+    const animatedStyle = useAnimatedStyle(() => ({ width: `${progress.value * 100}%` }));
+    const isInfo = toast.type === 'info';
+    return (
+        <Animated.View style={[styles.toastContainer, isInfo && styles.infoToast]} entering={FadeInUp} exiting={FadeOutUp}>
+            {isInfo ? <CheckCircleIcon size={20} color="#FFF" /> : <AlertTriangleIcon size={20} color="#FFF" />}
+            <Text style={styles.toastText}>{toast.message}</Text>
+            <TouchableOpacity onPress={() => onDismiss(toast.id)} style={{padding: 4}}><XIcon size={16} color="#FFF" /></TouchableOpacity>
+            <Animated.View style={[styles.toastProgress, isInfo && styles.infoToastProgress, animatedStyle]} />
+        </Animated.View>
+    );
 };
 
-type Toast = { message: string, type: 'error' | 'info' };
-
 async function registerForPushNotificationsAsync() {
-  let token;
-  if (Device.isDevice) {
-    const { status: existingStatus } = await Notifications.getPermissionsAsync();
-    let finalStatus = existingStatus;
-    if (existingStatus !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
-      finalStatus = status;
-    }
-    if (finalStatus !== 'granted') {
-      alert('Failed to get push token for push notification!');
-      return;
-    }
-    const projectId = Constants.expoConfig?.extra?.eas?.projectId;
-    if (!projectId) {
-      Alert.alert('Configuration Error', 'Missing Expo projectId in app.json. Push notifications will not work.');
-      return;
-    }
-    token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
-  }
-
-  if (Platform.OS === 'android') {
-    Notifications.setNotificationChannelAsync('default', {
-      name: 'default',
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 250, 250, 250],
-      lightColor: '#FF231F7C',
-    });
-  }
-
+  if (!Device.isDevice) return;
+  const { status: existingStatus } = await Notifications.getPermissionsAsync();
+  let finalStatus = existingStatus;
+  if (existingStatus !== 'granted') finalStatus = (await Notifications.requestPermissionsAsync()).status;
+  if (finalStatus !== 'granted') { alert('Failed to get push token!'); return; }
+  const projectId = Constants.expoConfig?.extra?.eas?.projectId;
+  if (!projectId) { Alert.alert('Configuration Error', 'Missing Expo projectId. Push notifications will not work.'); return; }
+  const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+  if (Platform.OS === 'android') Notifications.setNotificationChannelAsync('default', { name: 'default', importance: Notifications.AndroidImportance.MAX, vibrationPattern: [0, 250, 250, 250], lightColor: '#FF231F7C' });
   return token;
 }
 
-const ChatScreen: React.FC<ChatScreenProps> = ({ onLock, onPanic: appOnPanic, onSetScreenSharing }) => {
+const ChatScreen: React.FC<{ onLock: () => void; onPanic: (c: Conversation | null, u: Profile | null) => void; onSetScreenSharing: (s: boolean) => void; }> = ({ onLock, onPanic: appOnPanic, onSetScreenSharing }) => {
   const { width } = useWindowDimensions();
   const isWideScreen = width > 768;
 
@@ -92,130 +81,88 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ onLock, onPanic: appOnPanic, on
   const [isProfileModalVisible, setIsProfileModalVisible] = useState(false);
   const [isForwardModalVisible, setIsForwardModalVisible] = useState(false);
   const [messageToForward, setMessageToForward] = useState<Message | null>(null);
-  const [toast, setToast] = useState<Toast | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const [isOffline, setIsOffline] = useState(false);
-  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
-
+  
   const [callState, setCallState] = useState<'idle' | 'outgoing' | 'incoming' | 'active'>('idle');
   const [incomingCallData, setIncomingCallData] = useState<{ offer: any, caller: Profile } | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [localMediaState, setLocalMediaState] = useState({ isMicMuted: false, isCameraOff: false });
   const [remoteMediaState, setRemoteMediaState] = useState({ isMicMuted: false, isCameraOff: false });
-  const webRTCManager = useRef(new WebRTCManager(
-    (stream) => setLocalStream(stream),
-    (stream) => setRemoteStream(stream)
-  )).current;
-  const signalingChannel = useRef<any>(null);
+  
   const callTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isProcessingQueue = useRef(false);
+  const typingClearTimeouts = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
-  const {
-    loading: dataLoading,
-    currentUser,
-    allProfiles,
-    setAllProfiles,
-    conversations,
-    setConversations,
-    presences,
-    messages,
-    setMessages,
-    loadMoreMessages,
-    loadingMoreMessages,
-    allMessagesLoaded,
-    markMessagesAsRead
-  } = useChatData(session, selectedConversation?.id || null);
+  const { loading, currentUser, allProfiles, setAllProfiles, conversations, setConversations, presences, messages, setMessages, loadMoreMessages, loadingMoreMessages, allMessagesLoaded, markMessagesAsRead } = useChatData(session, selectedConversation?.id || null);
   
   const showToast = useCallback((message: string, type: 'error' | 'info' = 'error') => {
-      setToast({ message, type });
-      setTimeout(() => setToast(null), 3500);
+      setToasts(currentToasts => [...currentToasts, { id: Date.now(), message, type }]);
   }, []);
+  const dismissToast = (id: number) => setToasts(currentToasts => currentToasts.filter(t => t.id !== id));
 
   const updateMessageInState = useCallback((conversationId: number, messageId: number | string, updates: Partial<Message>) => {
-    setMessages(prev => ({
-        ...prev,
-        [conversationId]: (prev[conversationId] || []).map(m => 
-            m.id === messageId ? { ...m, ...updates } : m
-        )
-    }));
+    setMessages(prev => ({ ...prev, [conversationId]: (prev[conversationId] || []).map(m => m.id === messageId ? { ...m, ...updates } : m) }));
   }, [setMessages]);
 
   const processMessageQueue = useCallback(async () => {
-    const queue = JSON.parse(await AsyncStorage.getItem('messageQueue') || '[]');
-    if (queue.length === 0) return;
-
-    const newQueue: QueuedMessage[] = [];
-    let successfullySent = false;
-
-    for (const item of queue) {
-        try {
-            const { error } = await supabase.from('messages').insert(item.payload);
-            if (error) {
-                const retries = (item.retries || 0) + 1;
-                if (retries < 3) {
-                    newQueue.push({ ...item, retries });
-                } else {
-                    updateMessageInState(item.payload.conversation_id, item.tempId, { status: 'failed' });
-                }
-            } else {
-                successfullySent = true;
-            }
-        } catch (e) {
-            newQueue.push(item);
-            setIsOffline(true);
-            break;
-        }
-    }
-
-    setMessageQueue(newQueue);
-    await AsyncStorage.setItem('messageQueue', JSON.stringify(newQueue));
-    if (successfullySent) setIsOffline(false);
-
-  }, [updateMessageInState]);
+    if (isProcessingQueue.current || !currentUser) return;
+    isProcessingQueue.current = true;
   
-  useEffect(() => {
-    setIsOffline(!navigator.onLine);
-    const handleOnline = () => {
-      setIsOffline(false);
-      showToast("You're back online!", 'info');
-      processMessageQueue();
-    };
-    const handleOffline = () => {
-      setIsOffline(true);
-      showToast("You're offline. Messages will be sent when you reconnect.", 'info');
-    };
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, [processMessageQueue, showToast]);
+    try {
+      let queue: QueuedMessage[] = JSON.parse(await AsyncStorage.getItem('messageQueue') || '[]');
+      if (queue.length === 0) { isProcessingQueue.current = false; return; }
 
-  useEffect(() => {
-    setAuthLoading(true);
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      setAuthLoading(false);
-    });
-    return () => subscription.unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (callState === 'active' || callState === 'idle') {
-        if (callTimeoutRef.current) {
-            clearTimeout(callTimeoutRef.current);
-            callTimeoutRef.current = null;
+      let networkErrorOccurred = false;
+      const remainingInQueue: QueuedMessage[] = [];
+  
+      for (const item of queue) {
+        if (item.retries >= MAX_RETRIES) {
+            updateMessageInState(item.payload.conversation_id, item.tempId, { status: 'failed' });
+            continue; // Skip this message, it's permanently failed
         }
-    }
-  }, [callState]);
+        
+        try {
+          let finalPayload = { ...item.payload };
+          if (item.file) {
+            const fileExt = item.file.name.split('.').pop();
+            const fileName = `${currentUser.id}-${Date.now()}.${fileExt}`;
+            const filePath = `${item.payload.conversation_id}/${fileName}`;
+            const response = await fetch(item.file.uri);
+            const blob = await response.blob();
+            const { error: uploadError } = await supabase.storage.from('media').upload(filePath, blob, { contentType: item.file.type, upsert: true });
+            if (uploadError) throw uploadError;
+            const { data } = supabase.storage.from('media').getPublicUrl(filePath);
+            finalPayload.media_url = data.publicUrl;
+            finalPayload.media_type = item.file.type;
+          }
+  
+          const { error: insertError } = await supabase.from('messages').insert(finalPayload);
+          if (insertError) throw insertError;
+  
+          // On success, remove from UI
+          setMessages(prev => ({...prev, [item.payload.conversation_id]: prev[item.payload.conversation_id]?.filter(m => m.id !== item.tempId)}));
+        } catch (error) {
+            networkErrorOccurred = true;
+            item.retries++;
+            remainingInQueue.push(item);
+        }
+      }
+  
+      await AsyncStorage.setItem('messageQueue', JSON.stringify(remainingInQueue));
+
+      const newIsOffline = networkErrorOccurred;
+      if (isOffline !== newIsOffline) setIsOffline(newIsOffline);
+      if (isOffline && !newIsOffline) showToast("You're back online! Messages sent.", 'info');
+      else if (!isOffline && newIsOffline) showToast("Network error. Messages queued.", 'info');
+  
+    } catch (e) { console.error("Critical queue processing error:", e); } 
+    finally { isProcessingQueue.current = false; }
+  }, [currentUser, isOffline, showToast, updateMessageInState, setMessages]);
   
   const endCallCleanup = useCallback(() => {
-    if (callTimeoutRef.current) {
-        clearTimeout(callTimeoutRef.current);
-        callTimeoutRef.current = null;
-    }
+    if (callTimeoutRef.current) { clearTimeout(callTimeoutRef.current); callTimeoutRef.current = null; }
     webRTCManager.close();
     setLocalStream(null);
     setRemoteStream(null);
@@ -224,8 +171,32 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ onLock, onPanic: appOnPanic, on
     onSetScreenSharing(false);
     setLocalMediaState({ isMicMuted: false, isCameraOff: false });
     setRemoteMediaState({ isMicMuted: false, isCameraOff: false });
-  }, [webRTCManager, onSetScreenSharing]);
+  }, [onSetScreenSharing]);
+
+  const webRTCManager = useRef(new WebRTCManager(setLocalStream, setRemoteStream)).current;
+  webRTCManager.setOnConnectionStateChange((state: RTCIceConnectionState) => {
+    if (state === 'failed' || state === 'disconnected' || state === 'closed') endCallCleanup();
+  });
   
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null;
+    if (isOffline) interval = setInterval(processMessageQueue, 5000); 
+    return () => { if (interval) clearInterval(interval); };
+  }, [isOffline, processMessageQueue]);
+  
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => { if (state === 'active') processMessageQueue(); });
+    return () => sub.remove();
+  }, [processMessageQueue]);
+
+  useEffect(() => {
+    setAuthLoading(true);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => { setSession(session); setAuthLoading(false); });
+    return () => subscription.unsubscribe();
+  }, []);
+  
+  useEffect(() => { if (currentUser) processMessageQueue(); }, [currentUser, processMessageQueue]);
+
   const handleSignalingMessage = useCallback((payload: SignalingPayload) => {
     switch (payload.type) {
       case 'offer':
@@ -234,508 +205,212 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ onLock, onPanic: appOnPanic, on
         if (caller) {
           setIncomingCallData({ offer: payload.data, caller });
           setCallState('incoming');
+          if (callTimeoutRef.current) clearTimeout(callTimeoutRef.current);
+          callTimeoutRef.current = setTimeout(() => { setCallState(cs => cs === 'incoming' ? (setIncomingCallData(null), 'idle') : cs); }, CALL_TIMEOUT_MS + 2000);
         }
         break;
-      case 'answer':
-        webRTCManager.setRemoteDescription(payload.data);
-        setCallState('active');
+      case 'answer': 
+        if (callTimeoutRef.current) { clearTimeout(callTimeoutRef.current); callTimeoutRef.current = null; }
+        webRTCManager.setRemoteDescription(payload.data); 
+        setCallState('active'); 
         break;
-      case 'ice-candidate':
-        webRTCManager.addIceCandidate(payload.data);
-        break;
-      case 'decline-call':
-        showToast(`${allProfiles.find(p => p.id === payload.from)?.name || 'User'} declined the call.`, 'info');
-        endCallCleanup();
-        break;
-      case 'end-call':
-        endCallCleanup();
-        break;
-      case 'audio-toggled':
-        setRemoteMediaState(prev => ({ ...prev, isMicMuted: payload.data.isMuted }));
-        break;
-      case 'video-toggled':
-        setRemoteMediaState(prev => ({ ...prev, isCameraOff: payload.data.isOff }));
-        break;
+      case 'ice-candidate': webRTCManager.addIceCandidate(payload.data); break;
+      case 'decline-call': if (callState === 'outgoing') { insertSystemMessage('Declined video call'); endCallCleanup(); } break;
+      case 'end-call': endCallCleanup(); break;
+      case 'audio-toggled': setRemoteMediaState(p => ({ ...p, isMicMuted: payload.data.isMuted })); break;
+      case 'video-toggled': setRemoteMediaState(p => ({ ...p, isCameraOff: payload.data.isOff })); break;
     }
-  }, [allProfiles, webRTCManager, showToast, endCallCleanup, callState]);
+  }, [allProfiles, webRTCManager, callState, endCallCleanup]);
+
+  useEffect(() => {
+    if (callState === 'incoming' && incomingCallData) {
+        const callerId = incomingCallData.caller.id;
+        const isCallerOnline = Object.values(presences).some((presence: any) => presence[0]?.user_id === callerId);
+        if (!isCallerOnline) {
+            handleDeclineCall();
+        }
+    }
+  }, [presences, callState, incomingCallData]);
 
   useEffect(() => {
     if (currentUser) {
-      registerForPushNotificationsAsync().then(token => {
-        if (token && token !== currentUser.push_token) {
-          supabase.from('profiles').update({ push_token: token }).eq('id', currentUser.id).then();
-        }
-      });
-      
-      signalingChannel.current = supabase.channel(`calls:${currentUser.id}`);
-      signalingChannel.current
-        .on('broadcast', { event: 'webrtc' }, ({ payload }: { payload: SignalingPayload }) => {
-          handleSignalingMessage(payload);
-        })
-        .subscribe();
+      registerForPushNotificationsAsync().then(token => { if (token && token !== currentUser.push_token) supabase.from('profiles').update({ push_token: token }).eq('id', currentUser.id).then(); });
+      const channel = supabase.channel(`calls:${currentUser.id}`);
+      channel.on('broadcast', { event: 'webrtc' }, ({ payload }) => { handleSignalingMessage(payload); }).subscribe();
+      return () => { supabase.removeChannel(channel); };
     }
-    return () => {
-      if (signalingChannel.current) {
-        supabase.removeChannel(signalingChannel.current);
-        signalingChannel.current = null;
+  }, [currentUser, handleSignalingMessage]);
+
+  useEffect(() => {
+    setTyping(null);
+    if (!selectedConversation || !currentUser) return;
+    const channel = supabase.channel(`typing:${selectedConversation.id}`);
+    const handleTyping = ({ payload }: { payload: { user_id: string }}) => {
+      if (payload.user_id !== currentUser.id) {
+        const user = allProfiles.find(p => p.id === payload.user_id);
+        if (user) {
+          if (typingClearTimeouts.current[payload.user_id]) clearTimeout(typingClearTimeouts.current[payload.user_id]);
+          setTyping({ user: user.name, conversationId: selectedConversation.id });
+          typingClearTimeouts.current[payload.user_id] = setTimeout(() => { setTyping(ct => (ct?.user === user.name) ? null : ct); delete typingClearTimeouts.current[payload.user_id]; }, 3000);
+        }
       }
     };
-  }, [currentUser, handleSignalingMessage]);
+    channel.on('broadcast', { event: 'typing' }, handleTyping).subscribe();
+    return () => { Object.values(typingClearTimeouts.current).forEach(clearTimeout); typingClearTimeouts.current = {}; supabase.removeChannel(channel); };
+  }, [selectedConversation, currentUser, allProfiles]);
+  
+  const handleBack = () => { setSelectedConversation(null); setReplyingTo(null); if (!isWideScreen) setActiveView('sidebar'); };
   
   useEffect(() => {
     const backAction = () => {
-      if (isNewConvoModalVisible || isProfileModalVisible || isForwardModalVisible || incomingCallData) {
-        setIsNewConvoModalVisible(false);
-        setIsProfileModalVisible(false);
-        setIsForwardModalVisible(false);
-        if (incomingCallData) handleDeclineCall();
-        return true; 
-      }
-      if (!isWideScreen && activeView === 'chat') {
-        handleBack();
-        return true;
-      }
+      if (isNewConvoModalVisible || isProfileModalVisible || isForwardModalVisible || incomingCallData) { setIsNewConvoModalVisible(false); setIsProfileModalVisible(false); setIsForwardModalVisible(false); if (incomingCallData) handleDeclineCall(); return true; }
+      if (!isWideScreen && activeView === 'chat') { handleBack(); return true; }
       return false;
     };
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
     return () => backHandler.remove();
   }, [activeView, isWideScreen, isNewConvoModalVisible, isProfileModalVisible, isForwardModalVisible, incomingCallData]);
 
-
-  const handleSelectConversation = (conversation: Conversation) => {
-      setSelectedConversation(conversation);
-      setReplyingTo(null);
-      if (!isWideScreen) setActiveView('chat');
-  };
-
-  const handleBack = () => {
-      setSelectedConversation(null);
-      setReplyingTo(null);
-      if (!isWideScreen) setActiveView('sidebar');
+  const handleSelectConversation = (c: Conversation) => { setSelectedConversation(c); setReplyingTo(null); if (!isWideScreen) setActiveView('chat'); };
+  
+  const insertSystemMessage = async (content: string) => {
+    if (!currentUser || !selectedConversation) return;
+    try { await supabase.from('messages').insert({ content, user_id: currentUser.id, conversation_id: selectedConversation.id, message_type: 'system' }); } 
+    catch (e) { console.error("Failed to insert system message:", e); }
   };
   
   const handleSendMessage = async (content: string, fileData?: { uri: string; type: string; name: string }, duration?: number, isViewOnce?: boolean) => {
-      if (!content.trim() && !fileData) return;
-      if (!currentUser || !selectedConversation) return;
-
+      if (!content.trim() && !fileData || !currentUser || !selectedConversation) return;
       const tempId = `temp_${Date.now()}`;
-      const messagePayload = { content, user_id: currentUser.id, conversation_id: selectedConversation.id, media_url: null, media_type: null, media_duration: duration, is_view_once: isViewOnce, reply_to_message_id: replyingTo ? (replyingTo.id as number) : null };
-
-      const optimisticMessage: Message = {
-          id: tempId,
-          created_at: new Date().toISOString(),
-          status: 'pending',
-          ...messagePayload
-      };
-      setMessages(prev => ({
-          ...prev,
-          [selectedConversation.id]: [optimisticMessage, ...(prev[selectedConversation.id] || [])]
-      }));
-      setReplyingTo(null);
-      setTyping(null);
-
-      if (isOffline || fileData) {
-          if(fileData) {
-              showToast("File uploads are disabled while offline.");
-              setMessages(prev => ({ ...prev, [selectedConversation.id]: (prev[selectedConversation.id] || []).filter(m => m.id !== tempId) }));
-              return;
-          }
-          const newItem: QueuedMessage = { tempId, payload: messagePayload };
-          const newQueue = [...messageQueue, newItem];
-          setMessageQueue(newQueue);
-          await AsyncStorage.setItem('messageQueue', JSON.stringify(newQueue));
-          return;
-      }
-
-      try {
-          const { error: insertError } = await supabase.from('messages').insert(messagePayload);
-          if(insertError) throw insertError;
-
-          setIsOffline(false);
-          processMessageQueue();
-      } catch (error: any) {
-          setIsOffline(true);
-          const newItem: QueuedMessage = { tempId, payload: messagePayload };
-          const newQueue = [...messageQueue, newItem];
-          setMessageQueue(newQueue);
-          await AsyncStorage.setItem('messageQueue', JSON.stringify(newQueue));
-      }
+      const payload: Omit<Message, 'id' | 'created_at' | 'reactions' | 'read_at' | 'status'> = { content, user_id: currentUser.id, conversation_id: selectedConversation.id, media_url: null, media_type: null, media_duration: duration, is_view_once: isViewOnce, reply_to_message_id: replyingTo ? (replyingTo.id as number) : null, message_type: 'standard' };
+      setMessages(p => ({ ...p, [selectedConversation.id]: [{ id: tempId, created_at: new Date().toISOString(), status: 'pending', ...payload, media_url: fileData?.uri, media_type: fileData?.type }, ...(p[selectedConversation.id] || [])] }));
+      setReplyingTo(null); setTyping(null);
+      const queue = JSON.parse(await AsyncStorage.getItem('messageQueue') || '[]');
+      await AsyncStorage.setItem('messageQueue', JSON.stringify([...queue, { tempId, payload, file: fileData, retries: 0 }]));
+      processMessageQueue();
   };
   
-    const handleTyping = () => {
-        if (typingTimeoutRef.current) return;
-        if (!selectedConversation || !session?.user || isOffline) return;
+  const handleTyping = () => {
+    if (typingTimeoutRef.current || !selectedConversation || !session?.user || isOffline) return;
+    supabase.channel(`typing:${selectedConversation.id}`).send({ type: 'broadcast', event: 'typing', payload: { user_id: session.user.id } });
+    typingTimeoutRef.current = setTimeout(() => { typingTimeoutRef.current = null; }, 2000);
+  }
 
-        const channel = supabase.channel(`chat:${selectedConversation.id}`);
-        channel.send({ type: 'broadcast', event: 'typing', payload: { user_id: session.user.id } });
-        
-        typingTimeoutRef.current = setTimeout(() => {
-          typingTimeoutRef.current = null;
-        }, 2000); // Throttle for 2 seconds
+  const handleStar = async (messageId: number | string) => {
+    if (typeof messageId !== 'number' || !currentUser || isOffline || !selectedConversation) return;
+    updateMessageInState(selectedConversation.id, messageId, { starred: true });
+    const { error } = await supabase.from('starred_messages').insert({ message_id: messageId, user_id: currentUser.id });
+    if (error) { showToast("Failed to star message."); updateMessageInState(selectedConversation.id, messageId, { starred: false }); }
+  };
+
+  const handleUnstar = async (messageId: number | string) => {
+    if (typeof messageId !== 'number' || !currentUser || isOffline || !selectedConversation) return;
+    updateMessageInState(selectedConversation.id, messageId, { starred: false });
+    const { error } = await supabase.from('starred_messages').delete().match({ message_id: messageId, user_id: currentUser.id });
+    if (error) { showToast("Failed to unstar message."); updateMessageInState(selectedConversation.id, messageId, { starred: true }); }
+  };
+
+  const handleCreateConversation = async (users: Profile[], groupName?: string) => {
+    if (!currentUser || users.length === 0 || isOffline) { showToast("Cannot create conversation offline."); return; }
+    if (users.length === 1) {
+      const existing = conversations.find(c => !c.is_group && c.participants.length === 2 && c.participants.some(p => p.id === users[0].id));
+      if (existing) { handleSelectConversation(existing); setIsNewConvoModalVisible(false); return; }
     }
-
-    const handleAddReaction = async (messageId: number, emoji: string) => {
-        if (!currentUser || !selectedConversation || isOffline) return;
-    
-        const tempReaction: Reaction = { id: Date.now(), emoji, user_id: currentUser.id, message_id: messageId };
-        const originalMessages = messages[selectedConversation.id];
-        setMessages(prev => ({
-            ...prev,
-            [selectedConversation.id]: originalMessages.map(m => m.id === messageId ? { ...m, reactions: [...(m.reactions || []), tempReaction] } : m)
-        }));
-
-        try {
-            const { data, error } = await supabase.from('reactions').insert({ message_id: messageId, user_id: currentUser.id, emoji }).select().single();
-            if (error) throw error;
-            setMessages(prev => ({
-                ...prev,
-                [selectedConversation.id]: (prev[selectedConversation.id] || []).map(m => {
-                    if (m.id === messageId) {
-                        return { ...m, reactions: (m.reactions || []).filter(r => r.id !== tempReaction.id).concat(data as Reaction) };
-                    }
-                    return m;
-                })
-            }));
-        } catch (error) {
-            showToast("Failed to add reaction.");
-            setMessages(prev => ({ ...prev, [selectedConversation.id]: originalMessages }));
-        }
-    };
-
-    const handleRemoveReaction = async (reactionId: number, messageId: number) => {
-        if (!currentUser || !selectedConversation || isOffline) return;
-        
-        const originalMessages = messages[selectedConversation.id];
-        setMessages(prev => ({
-            ...prev,
-            [selectedConversation.id]: originalMessages.map(m => m.id === messageId ? { ...m, reactions: (m.reactions || []).filter(r => r.id !== reactionId) } : m)
-        }));
-
-        try {
-            const { error } = await supabase.from('reactions').delete().eq('id', reactionId);
-            if (error) throw error;
-        } catch (error) {
-            showToast("Failed to remove reaction.");
-            setMessages(prev => ({ ...prev, [selectedConversation.id]: originalMessages }));
-        }
-    };
-    
-    const handleStar = async (messageId: number | string) => { 
-        if(currentUser && typeof messageId === 'number' && !isOffline) { 
-            updateMessageInState(selectedConversation!.id, messageId, { starred: true });
-            try {
-              const { error } = await supabase.from('starred_messages').insert({ message_id: messageId, user_id: currentUser.id }); 
-              if (error) throw error;
-            } catch (error) {
-              showToast("Failed to star message.");
-              updateMessageInState(selectedConversation!.id, messageId, { starred: false });
-            }
-        } else {
-          showToast("Cannot perform this action on an unsent message or while offline.");
-        }
-    };
-    const handleUnstar = async (messageId: number | string) => { 
-        if(currentUser && typeof messageId === 'number' && !isOffline) { 
-            updateMessageInState(selectedConversation!.id, messageId, { starred: false });
-            try {
-              const { error } = await supabase.from('starred_messages').delete().match({ message_id: messageId, user_id: currentUser.id }); 
-              if (error) throw error;
-            } catch (error) {
-              showToast("Failed to unstar message.");
-              updateMessageInState(selectedConversation!.id, messageId, { starred: true });
-            }
-        } else {
-            showToast("Cannot perform this action on an unsent message or while offline.");
-        }
-    };
-    
-    const handleViewOnceMessage = async (message: Message): Promise<boolean> => {
-        if (isOffline) {
-            showToast("Cannot view this message while offline.");
-            return false;
-        }
-        try {
-            const { error } = await supabase.functions.invoke('messaging-utils', { body: { type: 'DELETE_VIEW_ONCE', record: message } });
-            if (error) throw error;
-            return true;
-        } catch (error) {
-            showToast("Could not confirm view. Message may reappear.");
-            return false;
-        }
-    };
-
-    const handleCreateConversation = async (selectedUsers: Profile[], groupName?: string) => {
-        if (!currentUser || selectedUsers.length === 0 || isOffline) {
-            showToast("Cannot create conversation while offline.");
-            return;
-        }
-        const isGroup = selectedUsers.length > 1;
-        if (!isGroup) {
-            const otherUserId = selectedUsers[0].id;
-            const existingConversation = conversations.find(c => !c.is_group && c.participants.length === 2 && c.participants.some(p => p.id === currentUser.id) && c.participants.some(p => p.id === otherUserId));
-            if (existingConversation) {
-                handleSelectConversation(existingConversation);
-                setIsNewConvoModalVisible(false);
-                return;
-            }
-        }
-        try {
-            const participants = [currentUser, ...selectedUsers];
-            const { data: convData, error: convError } = await supabase.from('conversations').insert({ is_group: isGroup, group_name: isGroup ? groupName : null, created_by: currentUser.id }).select().single();
-            if (convError || !convData) throw convError || new Error("Failed to create conversation");
-            const participantData = participants.map(p => ({ conversation_id: convData.id, user_id: p.id }));
-            const { error: participantError } = await supabase.from('conversation_participants').insert(participantData);
-            if (participantError) {
-              await supabase.from('conversations').delete().eq('id', convData.id);
-              throw participantError;
-            }
-            const newConversationObject: Conversation = { id: convData.id, is_group: isGroup, display_name: isGroup ? groupName! : selectedUsers[0].name, display_avatar: isGroup ? `https://i.pravatar.cc/150?u=${convData.id}` : selectedUsers[0].avatar_url, last_message_content: null, last_message_created_at: new Date().toISOString(), participants: participants };
-            setConversations(prev => [newConversationObject, ...prev]);
-            handleSelectConversation(newConversationObject);
-            setIsNewConvoModalVisible(false);
-        } catch (error: any) {
-            showToast("Failed to create conversation. Please try again.");
-            setIsOffline(true);
-        }
-    };
-    
-    const handleUpdateProfile = async (name: string, avatarFile?: { uri: string; type: string; name: string }) => {
-        if(!currentUser || isOffline) {
-            showToast("Cannot update profile while offline.");
-            return;
-        }
-        let avatar_url = currentUser.avatar_url;
-        try {
-            if (avatarFile) {
-                const fileExt = avatarFile.name.split('.').pop();
-                const fileName = `${Date.now()}.${fileExt}`;
-                const filePath = `${currentUser.id}/${fileName}`;
-                const response = await fetch(avatarFile.uri);
-                const blob = await response.blob();
-                const { error: uploadError } = await supabase.storage.from('media').upload(filePath, blob, { contentType: avatarFile.type, upsert: true });
-                if (uploadError) throw uploadError;
-                const { data } = supabase.storage.from('media').getPublicUrl(filePath);
-                avatar_url = `${data.publicUrl}?t=${new Date().getTime()}`;
-            }
-            const { error: updateError } = await supabase.from('profiles').update({ name, avatar_url }).eq('id', currentUser.id);
-            if (updateError) throw updateError;
-            setAllProfiles(prev => prev.map(p => p.id === currentUser.id ? { ...p, name, avatar_url } : p));
-            setIsProfileModalVisible(false);
-        } catch (error: any) {
-            showToast("Couldn't update profile. Please try again.");
-            setIsOffline(true);
-        }
-    };
-
+    const { data: conv, error: convErr } = await supabase.from('conversations').insert({ is_group: users.length > 1, group_name: groupName, created_by: currentUser.id }).select().single();
+    if (convErr || !conv) { showToast("Failed to create conversation."); return; }
+    const participants = [currentUser, ...users].map(p => ({ conversation_id: conv.id, user_id: p.id }));
+    const { error: partErr } = await supabase.from('conversation_participants').insert(participants);
+    if (partErr) { await supabase.from('conversations').delete().eq('id', conv.id); showToast("Failed to add participants."); return; }
+    setIsNewConvoModalVisible(false);
+  };
+  
   const handleOpenForwardModal = (message: Message) => { setMessageToForward(message); setIsForwardModalVisible(true); };
-  const handleForwardMessage = async (targetConversations: Conversation[]) => {
+  const handleForwardMessage = async (targets: Conversation[]) => {
     if (!messageToForward || !currentUser || isOffline) return;
-    try {
-      const forwardPayloads = targetConversations.map(convo => ({ ...messageToForward, id: undefined, created_at: undefined, conversation_id: convo.id, user_id: currentUser.id, read_at: null, reactions: undefined, forwarded_from_name: allProfiles.find(p => p.id === messageToForward.user_id)?.name || 'Someone' }));
-      const { error } = await supabase.from('messages').insert(forwardPayloads);
-      if (error) throw error;
-      setMessageToForward(null);
-      setIsForwardModalVisible(false);
-    } catch(error) {
-      showToast("Failed to forward message.");
-    }
+    const payloads = targets.map(c => ({ ...messageToForward, id: undefined, conversation_id: c.id, user_id: currentUser.id, forwarded_from_name: allProfiles.find(p => p.id === messageToForward.user_id)?.name }));
+    const { error } = await supabase.from('messages').insert(payloads);
+    if (error) showToast("Failed to forward message.");
+    setIsForwardModalVisible(false);
   };
 
   const sendSignalingMessage = (to: string, payload: Omit<SignalingPayload, 'from'>) => {
     if (!currentUser || isOffline) return;
-    const fullPayload: SignalingPayload = { ...payload, from: currentUser.id };
-    supabase.channel(`calls:${to}`).send({ type: 'broadcast', event: 'webrtc', payload: fullPayload });
+    supabase.channel(`calls:${to}`).send({ type: 'broadcast', event: 'webrtc', payload: { ...payload, from: currentUser.id } });
   };
   
   const handleStartCall = async () => {
-    if (callState !== 'idle') return;
-    if (!selectedConversation || !currentUser || isOffline) { showToast("Cannot start calls while offline."); return; }
-    const otherUser = selectedConversation.participants.find(p => p.id !== currentUser.id);
-    if (!otherUser) { showToast("Cannot start a call in this chat."); return; }
+    if (callState !== 'idle' || !selectedConversation || !currentUser || isOffline) return;
+    const other = selectedConversation.participants.find(p => p.id !== currentUser.id);
+    if (!other) { showToast("Cannot start call in this chat."); return; }
     try {
         await webRTCManager.start();
-        webRTCManager.onIceCandidate((candidate) => sendSignalingMessage(otherUser.id, { type: 'ice-candidate', data: candidate }));
+        webRTCManager.setOnIceCandidate((c) => sendSignalingMessage(other.id, { type: 'ice-candidate', data: c }));
         const offer = await webRTCManager.createOffer();
-        sendSignalingMessage(otherUser.id, { type: 'offer', data: offer });
+        sendSignalingMessage(other.id, { type: 'offer', data: offer });
         setCallState('outgoing');
-        if (callTimeoutRef.current) clearTimeout(callTimeoutRef.current);
         callTimeoutRef.current = setTimeout(() => {
-            showToast("Call attempt timed out. The user may be unavailable.");
-            handleEndCall();
+            setCallState(currentCallState => {
+                if (currentCallState === 'outgoing') {
+                    insertSystemMessage('Missed video call');
+                    endCallCleanup();
+                    return 'idle';
+                }
+                return currentCallState;
+            });
         }, CALL_TIMEOUT_MS);
-    } catch(err) {
-        showToast("Couldn't start the call. Please check permissions.");
-    }
+    } catch(err) { showToast("Couldn't start call. Check permissions."); }
   };
 
   const handleAcceptCall = async () => {
     if (!incomingCallData || !currentUser || isOffline) return;
-    setIsNewConvoModalVisible(false);
-    setIsProfileModalVisible(false);
-    setIsForwardModalVisible(false);
+    setIsNewConvoModalVisible(false); setIsProfileModalVisible(false); setIsForwardModalVisible(false);
     try {
         await webRTCManager.start();
-        webRTCManager.onIceCandidate((candidate) => sendSignalingMessage(incomingCallData.caller.id, { type: 'ice-candidate', data: candidate }));
+        webRTCManager.setOnIceCandidate((c) => sendSignalingMessage(incomingCallData.caller.id, { type: 'ice-candidate', data: c }));
         const answer = await webRTCManager.createAnswer(incomingCallData.offer);
         sendSignalingMessage(incomingCallData.caller.id, { type: 'answer', data: answer });
-        setCallState('active');
-        setIncomingCallData(null);
-        setLocalMediaState({ isMicMuted: false, isCameraOff: false });
-        setRemoteMediaState({ isMicMuted: false, isCameraOff: false });
-    } catch(err) {
-        showToast("Couldn't accept the call.");
-    }
+        setCallState('active'); setIncomingCallData(null);
+    } catch(err) { showToast("Couldn't accept call."); }
   };
   
-  const handleDeclineCall = () => {
-    if (incomingCallData) sendSignalingMessage(incomingCallData.caller.id, { type: 'decline-call', data: null });
-    setCallState('idle');
-    setIncomingCallData(null);
-  };
+  const handleDeclineCall = () => { if (incomingCallData) sendSignalingMessage(incomingCallData.caller.id, { type: 'decline-call', data: null }); setCallState('idle'); setIncomingCallData(null); };
+  const handleEndCall = () => { if (!selectedConversation || !currentUser) return endCallCleanup(); selectedConversation.participants.filter(p => p.id !== currentUser.id).forEach(p => sendSignalingMessage(p.id, { type: 'end-call', data: null })); endCallCleanup(); };
   
-  const handleEndCall = () => {
-    if (!selectedConversation || !currentUser) return endCallCleanup();
-    const participants = selectedConversation.participants.filter(p => p.id !== currentUser.id);
-    participants.forEach(p => sendSignalingMessage(p.id, { type: 'end-call', data: null }));
-    endCallCleanup();
-  };
+  const handlePanicPress = () => { handleEndCall(); appOnPanic(selectedConversation, currentUser); };
   
-  const handleToggleLocalAudio = useCallback(() => {
-    const muted = !localMediaState.isMicMuted;
-    webRTCManager.toggleAudio(muted);
-    setLocalMediaState(prev => ({ ...prev, isMicMuted: muted }));
-    const otherUser = selectedConversation?.participants.find(p => p.id !== currentUser?.id);
-    if (otherUser) sendSignalingMessage(otherUser.id, { type: 'audio-toggled', data: { isMuted: muted } });
-  }, [localMediaState.isMicMuted, webRTCManager, selectedConversation, currentUser]);
-
-  const handleToggleLocalVideo = useCallback(() => {
-    const off = !localMediaState.isCameraOff;
-    webRTCManager.toggleVideo(off);
-    setLocalMediaState(prev => ({ ...prev, isCameraOff: off }));
-    const otherUser = selectedConversation?.participants.find(p => p.id !== currentUser?.id);
-    if (otherUser) sendSignalingMessage(otherUser.id, { type: 'video-toggled', data: { isOff: off } });
-  }, [localMediaState.isCameraOff, webRTCManager, selectedConversation, currentUser]);
-
-  const handlePanicPress = () => {
-    handleEndCall();
-    appOnPanic(selectedConversation, currentUser);
+  const handleRetrySendMessage = async (tempId: string) => {
+    let queue: QueuedMessage[] = JSON.parse(await AsyncStorage.getItem('messageQueue') || '[]');
+    const index = queue.findIndex(item => item.tempId === tempId);
+    if (index > -1) {
+      updateMessageInState(queue[index].payload.conversation_id, tempId, { status: 'pending' });
+      queue[index].retries = 0;
+      await AsyncStorage.setItem('messageQueue', JSON.stringify(queue));
+      processMessageQueue();
+    }
   };
 
-  const renderContent = () => {
-    if (authLoading || (session && dataLoading)) {
-        return <View style={styles.centerContainer}><SpinnerIcon size={40} color="#FFF" /></View>;
-    }
-    
-    if (!session) {
-        return <View style={styles.centerContainer}><Auth /></View>;
-    }
-
-    if (!currentUser) {
-        return <View style={styles.centerContainer}><SpinnerIcon size={40} color="#FFF" /></View>;
-    }
-
-    const handleMessageAction = (action: Function, messageId: number | string) => {
-      if(typeof messageId === 'string' || isOffline) {
-        showToast("This action is unavailable for unsent messages or while offline.");
-        return;
-      }
-      action(messageId);
-    };
-
-    return (
-       <View style={[styles.chatContainer, isDarkMode ? styles.darkChatContainer : styles.lightChatContainer]}>
-          <Modal visible={isNewConvoModalVisible} transparent={true} animationType="slide" onRequestClose={() => setIsNewConvoModalVisible(false)}>
-            <NewConversationModal allProfiles={allProfiles.filter(p => p.id !== currentUser.id)} onClose={() => setIsNewConvoModalVisible(false)} onCreateConversation={handleCreateConversation} />
-          </Modal>
-          <Modal visible={isProfileModalVisible} transparent={true} animationType="slide" onRequestClose={() => setIsProfileModalVisible(false)}>
-            <ProfileModal currentUser={currentUser} onClose={() => setIsProfileModalVisible(false)} onSave={handleUpdateProfile} />
-          </Modal>
-          <Modal visible={isForwardModalVisible} transparent={true} animationType="slide" onRequestClose={() => setIsForwardModalVisible(false)}>
-            <ForwardModal conversations={conversations} onClose={() => setIsForwardModalVisible(false)} onForward={handleForwardMessage} />
-          </Modal>
-          {incomingCallData && <IncomingCallModal caller={incomingCallData.caller} onAccept={handleAcceptCall} onDecline={handleDeclineCall} />}
-
-          {(isWideScreen || activeView === 'sidebar') && (
-            <Sidebar 
-              conversations={conversations}
-              currentUser={currentUser}
-              presences={presences}
-              onSelectConversation={handleSelectConversation}
-              isDarkMode={isDarkMode}
-              setIsDarkMode={setIsDarkMode}
-              onNewChat={() => setIsNewConvoModalVisible(true)}
-              onLock={onLock}
-              onEditProfile={() => setIsProfileModalVisible(true)}
-              selectedConversationId={selectedConversation?.id || null}
-            />
-          )}
-
-          {(isWideScreen || activeView === 'chat') && selectedConversation && (
-              <Animated.View style={{flex: 1}} layout={Layout.springify()}>
-                <ChatView
-                  key={selectedConversation.id}
-                  conversation={selectedConversation}
-                  messages={messages[selectedConversation.id] || []}
-                  onSendMessage={handleSendMessage}
-                  currentUserId={currentUser.id}
-                  onBack={isWideScreen ? undefined : handleBack}
-                  onTyping={handleTyping}
-                  typingInfo={typing}
-                  onAddReaction={(msgId, emoji) => handleMessageAction(() => handleAddReaction(msgId, emoji), msgId)}
-                  onRemoveReaction={(reactionId, msgId) => handleMessageAction(() => handleRemoveReaction(reactionId, msgId), msgId)}
-                  onForward={(msg) => handleMessageAction(() => handleOpenForwardModal(msg), msg.id)}
-                  onStar={(msgId) => handleStar(msgId)}
-                  onUnstar={(msgId) => handleUnstar(msgId)}
-                  onMarkAsRead={markMessagesAsRead}
-                  onViewOnceMessage={handleViewOnceMessage}
-                  allProfiles={allProfiles}
-                  replyingTo={replyingTo}
-                  setReplyingTo={(msg) => {
-                    if(msg && (typeof msg.id === 'string' || isOffline)){
-                      showToast("Cannot reply to an unsent message or while offline.");
-                      return;
-                    }
-                    setReplyingTo(msg);
-                  }}
-                  onLoadMoreMessages={loadMoreMessages}
-                  isLoadingMore={loadingMoreMessages}
-                  allMessagesLoaded={allMessagesLoaded}
-                  onStartCall={handleStartCall}
-                  localStream={localStream}
-                  remoteStream={remoteStream}
-                  onEndCall={handleEndCall}
-                  callState={callState}
-                  webRTCManager={webRTCManager}
-                  onPanic={handlePanicPress}
-                  onScreenShareChange={onSetScreenSharing}
-                  isOffline={isOffline}
-                  isDarkMode={isDarkMode}
-                  onToggleLocalAudio={handleToggleLocalAudio}
-                  onToggleLocalVideo={handleToggleLocalVideo}
-                  localMediaState={localMediaState}
-                  remoteMediaState={remoteMediaState}
-                />
-              </Animated.View>
-          )}
-       </View>
-    )
-  }
+  if (authLoading) return <ImageBackground source={{ uri: 'https://images.unsplash.com/photo-1519681393784-d120267933ba?q=80&w=2070&auto=format&fit=crop' }} style={styles.backgroundImage}><View style={styles.centerContainer}><SpinnerIcon size={40} color="#FFF" /></View></ImageBackground>;
+  if (!session) return <ImageBackground source={{ uri: 'https://images.unsplash.com/photo-1519681393784-d120267933ba?q=80&w=2070&auto=format&fit=crop' }} style={styles.backgroundImage}><View style={styles.centerContainer}><Auth /></View></ImageBackground>;
 
   return (
     <ImageBackground source={{ uri: 'https://images.unsplash.com/photo-1519681393784-d120267933ba?q=80&w=2070&auto=format&fit=crop' }} style={styles.backgroundImage}>
       <SafeAreaView style={styles.safeArea}>
-        {renderContent()}
+          <BlurView intensity={50} tint={isDarkMode ? 'dark' : 'light'} style={styles.chatContainer}>
+            <NewConversationModal isVisible={isNewConvoModalVisible} allProfiles={allProfiles.filter(p => p.id !== currentUser?.id)} onClose={() => setIsNewConvoModalVisible(false)} onCreateConversation={handleCreateConversation} />
+            {currentUser && <ProfileModal isVisible={isProfileModalVisible} currentUser={currentUser} onClose={() => setIsProfileModalVisible(false)} onSave={async (n, f) => { await supabase.from('profiles').update({ name: n }).eq('id', currentUser.id); setIsProfileModalVisible(false); }} />}
+            <ForwardModal isVisible={isForwardModalVisible} conversations={conversations} onClose={() => setIsForwardModalVisible(false)} onForward={handleForwardMessage} />
+            {incomingCallData && <IncomingCallModal caller={incomingCallData.caller} onAccept={handleAcceptCall} onDecline={handleDeclineCall} />}
+            {(isWideScreen || activeView === 'sidebar') && (
+              <Sidebar conversations={conversations} currentUser={currentUser} presences={presences} onSelectConversation={handleSelectConversation} isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} onNewChat={() => setIsNewConvoModalVisible(true)} onLock={onLock} onEditProfile={() => setIsProfileModalVisible(true)} selectedConversationId={selectedConversation?.id || null} isLoading={loading} />
+            )}
+            {(isWideScreen || activeView === 'chat') && selectedConversation && currentUser && (
+                <Animated.View style={{flex: 1}} layout={Layout.springify()}>
+                  <ChatView key={selectedConversation.id} conversation={selectedConversation} messages={messages[selectedConversation.id] || []} onSendMessage={handleSendMessage} currentUserId={currentUser.id} onBack={isWideScreen ? undefined : handleBack} onTyping={handleTyping} typingInfo={typing} onAddReaction={async (mId, e) => await supabase.from('reactions').insert({ message_id: mId, user_id: currentUser.id, emoji: e })} onRemoveReaction={async (rId) => await supabase.from('reactions').delete().eq('id', rId)} onForward={handleOpenForwardModal} onStar={handleStar} onUnstar={handleUnstar} onMarkAsRead={markMessagesAsRead} onViewOnceMessage={async(m) => {await supabase.functions.invoke('messaging-utils',{body:{type:'DELETE_VIEW_ONCE',record:m}});return true}} allProfiles={allProfiles} replyingTo={replyingTo} setReplyingTo={setReplyingTo} onLoadMoreMessages={loadMoreMessages} isLoadingMore={loadingMoreMessages} allMessagesLoaded={allMessagesLoaded} onStartCall={handleStartCall} localStream={localStream} remoteStream={remoteStream} onEndCall={handleEndCall} callState={callState} webRTCManager={webRTCManager} onPanic={handlePanicPress} onScreenShareChange={onSetScreenSharing} isOffline={isOffline} isDarkMode={isDarkMode} onToggleLocalAudio={() => {webRTCManager.toggleAudio(!localMediaState.isMicMuted); setLocalMediaState(p => ({...p, isMicMuted: !p.isMicMuted}));}} onToggleLocalVideo={() => {webRTCManager.toggleVideo(!localMediaState.isCameraOff); setLocalMediaState(p => ({...p, isCameraOff: !p.isCameraOff}));}} localMediaState={localMediaState} remoteMediaState={remoteMediaState} showToast={showToast} onRetrySendMessage={handleRetrySendMessage} />
+                </Animated.View>
+            )}
+          </BlurView>
         {session && (isWideScreen || activeView === 'chat') && selectedConversation && <PanicButton onPanic={handlePanicPress} />}
-        
-        {toast && (
-            <Animated.View style={[styles.toastContainer, toast.type === 'info' && styles.infoToast]} entering={FadeInUp} exiting={FadeOutUp}>
-                {toast.type === 'error' ? <AlertTriangleIcon size={20} color="#FFF" /> : <CheckCircleIcon size={20} color="#FFF" />}
-                <Text style={styles.toastText}>{toast.message}</Text>
-                <TouchableOpacity onPress={() => setToast(null)} style={{padding: 4}}>
-                    <XIcon size={16} color="#FFF" />
-                </TouchableOpacity>
-            </Animated.View>
-        )}
+        <View style={styles.toastArea}>{toasts.map((t) => <ToastNotification key={t.id} toast={t} onDismiss={dismissToast} />)}</View>
       </SafeAreaView>
     </ImageBackground>
   );
@@ -744,32 +419,14 @@ const ChatScreen: React.FC<ChatScreenProps> = ({ onLock, onPanic: appOnPanic, on
 const styles = StyleSheet.create({
   backgroundImage: { flex: 1 },
   safeArea: { flex: 1 },
-  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', width: '100%' },
-  chatContainer: { height: '100%', width: '100%', flexDirection: 'row', overflow: 'hidden', backgroundColor: 'rgba(255, 255, 255, 0.5)', borderColor: 'rgba(255, 255, 255, 0.2)', borderWidth: 1 },
-  lightChatContainer: { backgroundColor: 'rgba(255, 255, 255, 0.5)', borderColor: 'rgba(255, 255, 255, 0.2)' },
-  darkChatContainer: { backgroundColor: 'rgba(0, 0, 0, 0.5)', borderColor: 'rgba(0, 0, 0, 0.2)' },
-  toastContainer: {
-    position: 'absolute',
-    top: 50,
-    left: 20,
-    right: 20,
-    backgroundColor: 'rgba(239, 68, 68, 0.9)',
-    padding: 12,
-    borderRadius: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    zIndex: 10000,
-    elevation: 10,
-  },
-  infoToast: {
-    backgroundColor: 'rgba(59, 130, 246, 0.9)',
-  },
-  toastText: {
-    color: '#FFF',
-    fontWeight: 'bold',
-    marginLeft: 8,
-    flex: 1,
-  },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  chatContainer: { height: '100%', width: '100%', flexDirection: 'row', overflow: 'hidden' },
+  toastArea: { position: 'absolute', top: 50, left: 20, right: 20, zIndex: 10000 },
+  toastContainer: { backgroundColor: 'rgba(239, 68, 68, 0.9)', padding: 12, borderRadius: 8, flexDirection: 'row', alignItems: 'center', elevation: 10, marginTop: 8, overflow: 'hidden' },
+  infoToast: { backgroundColor: 'rgba(59, 130, 246, 0.9)' },
+  toastText: { color: '#FFF', fontWeight: 'bold', marginLeft: 8, flex: 1 },
+  toastProgress: { position: 'absolute', bottom: 0, left: 0, height: 3, backgroundColor: 'rgba(255,255,255,0.4)' },
+  infoToastProgress: { backgroundColor: 'rgba(255,255,255,0.4)' }
 });
 
 export default ChatScreen;

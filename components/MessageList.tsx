@@ -22,10 +22,11 @@ interface MessageListProps {
   isLoadingMore: boolean;
   allMessagesLoaded: boolean;
   isDarkMode: boolean;
+  onRetry: (tempId: string) => void;
 }
 
 const MessageList: React.FC<MessageListProps> = (props) => {
-  const { messages, currentUserId, onAddReaction, onRemoveReaction, onForward, onStar, onUnstar, onMarkAsRead, onViewOnceMessage, searchTerm, onReply, onLoadMore, isLoadingMore, allMessagesLoaded, isDarkMode } = props;
+  const { messages, currentUserId, onAddReaction, onRemoveReaction, onForward, onStar, onUnstar, onMarkAsRead, onViewOnceMessage, searchTerm, onReply, onLoadMore, isLoadingMore, allMessagesLoaded, isDarkMode, onRetry } = props;
 
   const viewabilityConfig = {
     itemVisiblePercentThreshold: 50,
@@ -59,6 +60,7 @@ const MessageList: React.FC<MessageListProps> = (props) => {
         onReply={onReply}
         repliedMessage={item.repliedMessage}
         isDarkMode={isDarkMode}
+        onRetry={onRetry}
       />
     </Animated.View>
   );

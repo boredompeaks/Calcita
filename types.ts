@@ -29,6 +29,7 @@ export interface Message {
   reply_to_message_id?: number | null; // For replied messages
   starred?: boolean;
   status?: 'pending' | 'failed';
+  message_type?: 'standard' | 'system';
 }
 
 export interface Conversation {

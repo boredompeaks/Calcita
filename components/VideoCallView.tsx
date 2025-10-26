@@ -22,26 +22,27 @@ interface VideoCallViewProps {
   remoteMediaState: { isMicMuted: boolean; isCameraOff: boolean; };
 }
 
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
 const ControlButton: React.FC<{onPress: () => void, style?: any, children: React.ReactNode, accessibilityLabel: string}> = ({ onPress, style, children, accessibilityLabel }) => {
     const scale = useSharedValue(1);
     const animatedStyle = useAnimatedStyle(() => ({
         transform: [{ scale: scale.value }]
     }));
     
-    const handlePressIn = () => {
-        scale.value = withSpring(0.9);
-    };
-
-    const handlePressOut = () => {
-        scale.value = withSpring(1);
-    };
+    const handlePressIn = () => { scale.value = withSpring(0.9); };
+    const handlePressOut = () => { scale.value = withSpring(1); };
 
     return (
-        <Pressable onPress={onPress} onPressIn={handlePressIn} onPressOut={handlePressOut} accessibilityLabel={accessibilityLabel}>
-            <Animated.View style={[styles.controlButton, style, animatedStyle]}>
-                {children}
-            </Animated.View>
-        </Pressable>
+        <AnimatedPressable
+            onPress={onPress}
+            onPressIn={handlePressIn}
+            onPressOut={handlePressOut}
+            accessibilityLabel={accessibilityLabel}
+            style={[styles.controlButton, style, animatedStyle]}
+        >
+            {children}
+        </AnimatedPressable>
     )
 }
 
@@ -70,7 +71,6 @@ const VideoCallView: React.FC<VideoCallViewProps> = ({ onEndCall, conversation, 
     const sharing = await webRTCManager.toggleScreenShare();
     setIsScreenSharing(sharing);
     onScreenShareChange(sharing);
-    // When starting to screen share, ensure camera is "on" logically so that when we switch back, the video track is enabled.
     if(sharing && localMediaState.isCameraOff) {
       onToggleLocalVideo();
     }
@@ -78,11 +78,10 @@ const VideoCallView: React.FC<VideoCallViewProps> = ({ onEndCall, conversation, 
 
   const mainStreamUrl = isScreenSharing ? localStreamUrl : remoteStreamUrl;
   const pipStreamUrl = isScreenSharing ? remoteStreamUrl : localStreamUrl;
-  const isPipMirrored = !isScreenSharing; // Mirror local camera, not remote video or screen share
+  const isPipMirrored = !isScreenSharing;
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Main Video View */}
       {mainStreamUrl ? (
           <View style={StyleSheet.absoluteFill}>
             <RTCView 
@@ -104,7 +103,6 @@ const VideoCallView: React.FC<VideoCallViewProps> = ({ onEndCall, conversation, 
           </View>
       )}
 
-      {/* Picture-in-Picture View */}
       {pipStreamUrl && (
         <View style={styles.localVideoContainer}>
             <RTCView 
@@ -141,81 +139,18 @@ const VideoCallView: React.FC<VideoCallViewProps> = ({ onEndCall, conversation, 
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#111',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-  },
-  remoteVideo: {
-    width: '100%',
-    height: '100%',
-  },
-  remoteCameraOffOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  remoteVideoPlaceholder: {
-    position: 'absolute',
-    width: '100%',
-    height: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatar: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    marginBottom: 16,
-  },
-  placeholderText: {
-    color: '#FFF',
-    fontSize: 18,
-    fontWeight: '600',
-    marginTop: 8,
-  },
-  localVideoContainer: {
-    position: 'absolute',
-    top: 60,
-    right: 20,
-    width: 120,
-    height: 180,
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderColor: 'rgba(255,255,255,0.3)',
-    borderWidth: 1,
-    backgroundColor: '#000',
-  },
-  localVideo: {
-    width: '100%',
-    height: '100%',
-  },
-  cameraOffOverlay: {
-    position: 'absolute',
-    width: '100%',
-    height: '100%',
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  controlsContainer: {
-    flexDirection: 'row',
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    padding: 20,
-    borderRadius: 30,
-    marginBottom: 40,
-    gap: 16,
-  },
-  controlButton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    padding: 16,
-    borderRadius: 999,
-  },
-  endCallButton: {
-    backgroundColor: '#EF4444',
-  },
+  container: { flex: 1, backgroundColor: '#111', justifyContent: 'flex-end', alignItems: 'center' },
+  remoteVideo: { width: '100%', height: '100%' },
+  remoteCameraOffOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
+  remoteVideoPlaceholder: { position: 'absolute', width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center' },
+  avatar: { width: 120, height: 120, borderRadius: 60, marginBottom: 16 },
+  placeholderText: { color: '#FFF', fontSize: 18, fontWeight: '600', marginTop: 8 },
+  localVideoContainer: { position: 'absolute', top: 60, right: 20, width: 120, height: 180, borderRadius: 12, overflow: 'hidden', borderColor: 'rgba(255,255,255,0.3)', borderWidth: 1, backgroundColor: '#000' },
+  localVideo: { width: '100%', height: '100%' },
+  cameraOffOverlay: { position: 'absolute', width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
+  controlsContainer: { flexDirection: 'row', backgroundColor: 'rgba(0, 0, 0, 0.5)', padding: 20, borderRadius: 30, marginBottom: 40, gap: 16 },
+  controlButton: { backgroundColor: 'rgba(255, 255, 255, 0.2)', padding: 16, borderRadius: 999 },
+  endCallButton: { backgroundColor: '#EF4444' },
 });
 
 export default VideoCallView;

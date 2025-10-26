@@ -1,9 +1,9 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Image, Pressable, TouchableOpacity, Linking, Modal, Dimensions, NativeSyntheticEvent, NativeTouchEvent, Platform, UIManager } from 'react-native';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle, useSharedValue, withSpring, FadeIn } from 'react-native-reanimated';
 import { Message, Profile, Reaction } from '../types';
 import { Audio, AVPlaybackStatus } from 'expo-av';
-import { CheckIcon, ClockIcon, AlertTriangleIcon, CheckAllIcon, ReplyIcon, ForwardIcon, StarIcon, StarOutlineIcon, XIcon, PlayIcon, PauseIcon, ViewOnceIcon } from './icons';
+import { CheckIcon, ClockIcon, AlertTriangleIcon, CheckAllIcon, ReplyIcon, ForwardIcon, StarIcon, StarOutlineIcon, XIcon, PlayIcon, PauseIcon, ViewOnceIcon, PhoneOffIcon } from './icons';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -87,10 +87,11 @@ interface MessageBubbleProps {
   onReply: (message: Message) => void;
   repliedMessage?: Message & { sender?: Profile };
   isDarkMode: boolean;
+  onRetry: (tempId: string) => void;
 }
 
 const MessageBubble: React.FC<MessageBubbleProps> = (props) => {
-  const { message, sender, isCurrentUser, currentUserId, onAddReaction, onRemoveReaction, onForward, onStar, onUnstar, onViewOnceMessage, searchTerm, onReply, repliedMessage, isDarkMode } = props;
+  const { message, sender, isCurrentUser, currentUserId, onAddReaction, onRemoveReaction, onForward, onStar, onUnstar, onViewOnceMessage, searchTerm, onReply, repliedMessage, isDarkMode, onRetry } = props;
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const [isOpened, setIsOpened] = useState(false);
@@ -176,6 +177,13 @@ const MessageBubble: React.FC<MessageBubbleProps> = (props) => {
       setIsOpened(false); // Revert if the server call fails
     }
   };
+  
+  const handlePress = () => {
+    if (message.status === 'failed' && typeof message.id === 'string') {
+        onRetry(message.id);
+    }
+  };
+
 
   const renderContentWithHighlight = () => {
     if (!message.content || !searchTerm) {
@@ -220,6 +228,15 @@ const MessageBubble: React.FC<MessageBubbleProps> = (props) => {
     }
     
     return null;
+  }
+  
+  if (message.message_type === 'system') {
+    return (
+        <View style={styles.systemMessageContainer}>
+            <PhoneOffIcon size={14} color={isDarkMode ? '#9CA3AF' : '#6B7280'} style={{ marginRight: 8 }} />
+            <Text style={styles.systemMessageText}>{message.content}</Text>
+        </View>
+    );
   }
 
   const renderMessageContent = () => (
@@ -296,7 +313,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = (props) => {
             </Pressable>
         </Modal>
 
-        <Pressable onLongPress={isViewOnceAndUnopened ? undefined : handleLongPress} style={styles.container}>
+        <Pressable onLongPress={isViewOnceAndUnopened ? undefined : handleLongPress} onPress={handlePress} style={styles.container}>
             {isViewOnceAndUnopened ? (
                  <TouchableOpacity style={styles.bubble} onPress={handleViewOncePress}>
                     <View style={styles.viewOncePlaceholder}>
@@ -305,18 +322,21 @@ const MessageBubble: React.FC<MessageBubbleProps> = (props) => {
                     </View>
                  </TouchableOpacity>
             ) : (
-                <View style={[styles.bubble, message.status === 'pending' && { opacity: 0.7 }]}>
+                <View style={[styles.bubble, message.status === 'pending' && styles.pendingBubble, message.status === 'failed' && styles.failedBubble]}>
                    {renderMessageContent()}
+                   {message.status === 'failed' && <Text style={styles.failedText}>Message failed. Tap to retry.</Text>}
                 </View>
             )}
 
             {aggregatedReactions.length > 0 && !isViewOnceAndUnopened && (
                 <View style={styles.reactionsContainer}>
                     {aggregatedReactions.map(({ emoji, count, reaction_id }) => (
-                        <TouchableOpacity key={emoji} onPress={() => handleReactionClick(emoji)} style={[styles.reaction, reaction_id && styles.userReacted]}>
-                            <Text>{emoji}</Text> 
-                            <Text style={styles.reactionCount}>{count}</Text>
-                        </TouchableOpacity>
+                        <Animated.View key={emoji} entering={FadeIn.duration(200).springify()}>
+                          <TouchableOpacity onPress={() => handleReactionClick(emoji)} style={[styles.reaction, reaction_id && styles.userReacted]}>
+                              <Text>{emoji}</Text> 
+                              <Text style={styles.reactionCount}>{count}</Text>
+                          </TouchableOpacity>
+                        </Animated.View>
                     ))}
                 </View>
             )}
@@ -345,6 +365,20 @@ const getStyles = (isCurrentUser: boolean, isDarkMode: boolean) => StyleSheet.cr
         paddingVertical: 8,
         paddingHorizontal: 12,
         maxWidth: '80%',
+    },
+    pendingBubble: {
+        opacity: 0.7,
+    },
+    failedBubble: {
+        backgroundColor: isCurrentUser ? '#991B1B' : '#FECACA',
+        borderColor: '#F87171',
+        borderWidth: 1,
+    },
+    failedText: {
+        color: isCurrentUser ? '#FEE2E2' : '#991B1B',
+        fontSize: 12,
+        marginTop: 4,
+        alignSelf: 'flex-start',
     },
     contentText: {
         color: isCurrentUser ? '#FFFFFF' : (isDarkMode ? '#F9FAFB' : '#1F2937'),
@@ -377,6 +411,7 @@ const getStyles = (isCurrentUser: boolean, isDarkMode: boolean) => StyleSheet.cr
         marginLeft: isCurrentUser ? 0 : 10,
         marginRight: isCurrentUser ? 10 : 0,
         alignSelf: isCurrentUser ? 'flex-end' : 'flex-start',
+        flexWrap: 'wrap',
     },
     reaction: {
         backgroundColor: isDarkMode ? '#4B5563' : '#F3F4F6',
@@ -387,7 +422,8 @@ const getStyles = (isCurrentUser: boolean, isDarkMode: boolean) => StyleSheet.cr
         flexDirection: 'row',
         alignItems: 'center',
         borderWidth: 1,
-        borderColor: 'transparent'
+        borderColor: 'transparent',
+        marginTop: 4,
     },
     userReacted: {
         borderColor: '#3B82F6',
@@ -507,6 +543,20 @@ const getStyles = (isCurrentUser: boolean, isDarkMode: boolean) => StyleSheet.cr
         color: isCurrentUser ? '#E5E7EB' : (isDarkMode ? '#D1D5DB' : '#4B5563'),
         fontSize: 13,
         marginTop: 2,
+    },
+    systemMessageContainer: {
+        alignSelf: 'center',
+        backgroundColor: isDarkMode ? 'rgba(55, 65, 81, 0.5)' : 'rgba(229, 231, 235, 0.5)',
+        borderRadius: 16,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        marginVertical: 8,
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    systemMessageText: {
+        color: isDarkMode ? '#D1D5DB' : '#4B5563',
+        fontSize: 13,
     },
 });
 

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { View, TextInput, TouchableOpacity, StyleSheet, Image, Platform, Text, AppState, AppStateStatus } from 'react-native';
-import Animated, { Layout } from 'react-native-reanimated';
+import Animated, { Layout, FadeIn, FadeOut } from 'react-native-reanimated';
 import { launchImageLibrary } from 'react-native-image-picker';
 import { Audio } from 'expo-av';
 import { SendIcon, PaperclipIcon, MicIcon, XIcon, ViewOnceIcon } from './icons';
@@ -14,9 +14,10 @@ interface MessageInputProps {
   currentUserId: string;
   isOffline: boolean;
   isDarkMode: boolean;
+  showToast: (message: string, type: 'error' | 'info') => void;
 }
 
-const MessageInput: React.FC<MessageInputProps> = ({ onSendMessage, onTyping, replyingTo, onCancelReply, currentUserId, isOffline, isDarkMode }) => {
+const MessageInput: React.FC<MessageInputProps> = ({ onSendMessage, onTyping, replyingTo, onCancelReply, currentUserId, isOffline, isDarkMode, showToast }) => {
   const [text, setText] = useState('');
   const [file, setFile] = useState<{ uri: string; type: string; name: string } | null>(null);
   const [inputHeight, setInputHeight] = useState(48);
@@ -46,14 +47,14 @@ const MessageInput: React.FC<MessageInputProps> = ({ onSendMessage, onTyping, re
 
   const handleFileChange = () => {
     if (isOffline) {
-        alert("Cannot send files while offline.");
+        showToast("Cannot send files while offline.", 'info');
         return;
     }
     launchImageLibrary({ mediaType: 'photo', quality: 0.7, maxWidth: 1024, maxHeight: 1024 }, (response) => {
       if (response.didCancel) {
         // User cancelled image picker
       } else if (response.errorCode) {
-        // ImagePicker Error
+        showToast(response.errorMessage || 'Failed to select image.', 'error');
       } else if (response.assets && response.assets[0]) {
         const asset = response.assets[0];
         setFile({
@@ -86,7 +87,7 @@ const MessageInput: React.FC<MessageInputProps> = ({ onSendMessage, onTyping, re
   
   const startRecording = async () => {
     if (isOffline) {
-        alert("Cannot send voice notes while offline.");
+        showToast("Cannot send voice notes while offline.", 'info');
         return;
     }
     try {
@@ -212,7 +213,15 @@ const MessageInput: React.FC<MessageInputProps> = ({ onSendMessage, onTyping, re
           style={[styles.sendButton, !canSend && styles.micButton]}
           accessibilityLabel={canSend ? "Send message" : "Record voice message"}
         >
-          {canSend ? <SendIcon /> : <MicIcon />}
+          {canSend ? (
+            <Animated.View entering={FadeIn.duration(150)} exiting={FadeOut.duration(150)}>
+              <SendIcon />
+            </Animated.View>
+          ) : (
+            <Animated.View entering={FadeIn.duration(150)} exiting={FadeOut.duration(150)}>
+              <MicIcon />
+            </Animated.View>
+          )}
         </TouchableOpacity>
       </View>
     </Animated.View>

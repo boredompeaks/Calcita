@@ -1,15 +1,34 @@
-
-
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView } from 'react-native';
+import { View, Text, StyleSheet, Pressable, SafeAreaView } from 'react-native';
+import Animated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 
-interface CalculatorScreenProps {
-  onUnlock: () => void;
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
+const CalcButton: React.FC<{onPress: () => void, onLongPress?: () => void, style: any, textStyle: any, label: string, accessibilityLabel: string}> = 
+({ onPress, onLongPress, style, textStyle, label, accessibilityLabel }) => {
+    const scale = useSharedValue(1);
+    const animatedStyle = useAnimatedStyle(() => ({
+        transform: [{ scale: scale.value }],
+    }));
+
+    const handlePressIn = () => { scale.value = withSpring(0.9); };
+    const handlePressOut = () => { scale.value = withSpring(1); };
+    
+    return (
+        <AnimatedPressable
+            onPress={onPress}
+            onLongPress={onLongPress}
+            onPressIn={handlePressIn}
+            onPressOut={handlePressOut}
+            style={[style, animatedStyle]}
+            accessibilityLabel={accessibilityLabel}
+        >
+            <Text style={textStyle}>{label}</Text>
+        </AnimatedPressable>
+    );
 }
 
-const SECRET_CODES = ['280310', '210610'];
-
-const CalculatorScreen: React.FC<CalculatorScreenProps> = ({ onUnlock }) => {
+const CalculatorScreen: React.FC<{onUnlock: () => void}> = ({ onUnlock }) => {
   const [displayValue, setDisplayValue] = useState('0');
   const [operator, setOperator] = useState<string | null>(null);
   const [previousValue, setPreviousValue] = useState<string | null>(null);
@@ -26,7 +45,6 @@ const CalculatorScreen: React.FC<CalculatorScreenProps> = ({ onUnlock }) => {
 
   const handleOperatorInput = (nextOperator: string) => {
     const inputValue = parseFloat(displayValue);
-
     if (operator && !waitingForOperand) {
       const result = calculate(parseFloat(previousValue!), inputValue, operator);
       setDisplayValue(String(result));
@@ -34,7 +52,6 @@ const CalculatorScreen: React.FC<CalculatorScreenProps> = ({ onUnlock }) => {
     } else {
       setPreviousValue(displayValue);
     }
-
     setWaitingForOperand(true);
     setOperator(nextOperator);
   };
@@ -61,34 +78,27 @@ const CalculatorScreen: React.FC<CalculatorScreenProps> = ({ onUnlock }) => {
   };
   
   const handleLongPressEquals = () => {
-    if (SECRET_CODES.includes(displayValue.replace(/[\/\.]/g, ''))) {
+    if (['280310', '210610'].includes(displayValue.replace(/\./g, ''))) {
       onUnlock();
     }
   };
 
   const handleClear = () => {
+    if (isAllClear) {
+      setOperator(null);
+      setPreviousValue(null);
+    }
     setDisplayValue('0');
-    setOperator(null);
-    setPreviousValue(null);
     setWaitingForOperand(true);
   };
 
-  const handlePlusMinus = () => {
-    setDisplayValue(String(parseFloat(displayValue) * -1));
-  };
-  
-  const handlePercent = () => {
-    setDisplayValue(String(parseFloat(displayValue) / 100));
-  };
-  
-  const handleDot = () => {
-    if (!displayValue.includes('.')) {
-        setDisplayValue(displayValue + '.');
-    }
-  };
+  const handlePlusMinus = () => { setDisplayValue(String(parseFloat(displayValue) * -1)); };
+  const handlePercent = () => { setDisplayValue(String(parseFloat(displayValue) / 100)); };
+  const handleDot = () => { if (!displayValue.includes('.')) setDisplayValue(displayValue + '.'); };
 
+  const isAllClear = waitingForOperand || displayValue === '0';
   const buttons = [
-    { label: displayValue === '0' ? 'AC' : 'C', style: 'top', action: handleClear, accessibilityLabel: 'Clear' },
+    { label: isAllClear ? 'AC' : 'C', style: 'top', action: handleClear, accessibilityLabel: 'Clear' },
     { label: '+/-', style: 'top', action: handlePlusMinus, accessibilityLabel: 'Plus minus' },
     { label: '%', style: 'top', action: handlePercent, accessibilityLabel: 'Percentage' },
     { label: '/', style: 'operator', action: () => handleOperatorInput('/'), accessibilityLabel: 'Divide' },
@@ -116,15 +126,15 @@ const CalculatorScreen: React.FC<CalculatorScreenProps> = ({ onUnlock }) => {
       </View>
       <View style={styles.buttonContainer}>
         {buttons.map((btn, i) => (
-          <TouchableOpacity
+          <CalcButton
             key={i}
-            style={[styles.button, styles[btn.style]]}
+            style={[styles.button, styles[btn.style as keyof typeof styles]]}
+            textStyle={[styles.buttonText, styles[`${btn.style}Text` as keyof typeof styles]]}
             onPress={btn.action}
             onLongPress={btn.longAction}
+            label={btn.label}
             accessibilityLabel={btn.accessibilityLabel}
-          >
-            <Text style={[styles.buttonText, styles[`${btn.style}Text`]]}>{btn.label}</Text>
-          </TouchableOpacity>
+          />
         ))}
       </View>
     </SafeAreaView>
@@ -132,50 +142,19 @@ const CalculatorScreen: React.FC<CalculatorScreenProps> = ({ onUnlock }) => {
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000',
-    justifyContent: 'flex-end',
-  },
-  displayContainer: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    alignItems: 'flex-end',
-    padding: 30,
-  },
-  displayText: {
-    color: '#fff',
-    fontSize: 96,
-    fontWeight: '300',
-  },
-  buttonContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    paddingBottom: 10,
-  },
-  button: {
-    width: '23%',
-    height: '18%',
-    borderRadius: 999,
-    alignItems: 'center',
-    justifyContent: 'center',
-    margin: '1%',
-  },
-  buttonText: {
-    fontSize: 32,
-  },
+  container: { flex: 1, backgroundColor: '#000', justifyContent: 'flex-end' },
+  displayContainer: { flex: 1, justifyContent: 'flex-end', alignItems: 'flex-end', padding: 30 },
+  displayText: { color: '#fff', fontSize: 96, fontWeight: '300' },
+  buttonContainer: { flexDirection: 'row', flexWrap: 'wrap', paddingBottom: 10 },
+  button: { width: '23%', height: '18%', borderRadius: 999, alignItems: 'center', justifyContent: 'center', margin: '1%' },
+  buttonText: { fontSize: 32 },
   top: { backgroundColor: '#A5A5A5' },
   topText: { color: '#000' },
   operator: { backgroundColor: '#F1A33B' },
   operatorText: { color: '#fff' },
   number: { backgroundColor: '#333333' },
   numberText: { color: '#fff' },
-  'number-zero': {
-    backgroundColor: '#333333',
-    width: '48%',
-    alignItems: 'flex-start',
-    paddingLeft: 35,
-  },
+  'number-zero': { backgroundColor: '#333333', width: '48%', alignItems: 'flex-start', paddingLeft: 35 },
 });
 
 export default CalculatorScreen;
