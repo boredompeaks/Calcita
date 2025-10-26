@@ -1,0 +1,8 @@
+{
+  "name": "Copy of Copy of Copy of CalcIta",
+  "description": "A modern, secure, and feature-rich chat application with a translucent UI, inspired by icy landscapes.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

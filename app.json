@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "CalcIta",
+    "slug": "calcita",
+    "scheme": "calcita",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "resizeMode": "cover",
+      "backgroundColor": "#18181B"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.calcita.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app needs access to your camera to make video calls.",
+        "NSMicrophoneUsageDescription": "This app needs access to your microphone to make video calls and record voice notes.",
+        "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to send images and update your profile picture."
+      }
+    },
+    "android": {
+      "package": "com.calcita.app",
+      "versionCode": 1,
+      "permissions": [
+        "INTERNET",
+        "RECORD_AUDIO",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "CAMERA"
+      ]
+    },
+    "web": {},
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "color": "#87CEFA"
+        }
+      ],
+      "expo-dev-client"
+    ],
+    "extra": {
+      "eas": {},
+      "supabaseUrl": "https://pryttuovqobvwudijnzb.supabase.co",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InByeXR0dW92cW9idnd1ZGlqbnpiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEyOTYyNTQsImV4cCI6MjA3Njg3MjI1NH0.R1STW7rGF4otYdMC5lfJ-42f5NHN0EW9MW8Kh3uTVmQ"
+    },
+    "updates": {
+      "fallbackToCacheTimeout": 0
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    }
+  }
+}
